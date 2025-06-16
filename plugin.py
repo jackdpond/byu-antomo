@@ -664,6 +664,7 @@ def create_tomogram_navigator_widget(viewer, saved_annotations_widget=None, conf
     load_button.max_width = 200
     def load_tomogram():
         print("Load Tomogram button pressed")  # Debug print
+        start_time = time.time()
         selected_id = tomo_dropdown.value
         if selected_id not in tomo_ids:
             show_error("No tomogram selected.")
@@ -675,8 +676,11 @@ def create_tomogram_navigator_widget(viewer, saved_annotations_widget=None, conf
             viewer.layers.pop()
         try:
             # Set cursor to spinning icon
+            print(f"[DEBUG] Whatever comes first in {time.time() - start_time:.2f} seconds")
             QApplication.setOverrideCursor(Qt.WaitCursor)
+            start_time = time.time()
             data = mrc_to_np(file_path)
+            print(f"[DEBUG] Processed tomogram in {time.time() - start_time:.2f} seconds")
             data = process_tomogram(data)
             data = rescale(data)
             viewer.add_image(data, name="Tomogram", metadata={'source': file_path})
