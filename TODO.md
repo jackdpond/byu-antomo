@@ -1,0 +1,3 @@
+- fix file saving, figure out master csv or individual csv files
+- mask bug
+- way to see annotations that are already made.

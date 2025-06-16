@@ -1,0 +1,7 @@
+z,y,x,label,user,timestamp,source_path,mask_path
+119.0,657.7151177264435,439.5060445190237,pilii,,2025-06-11T17:44:23.054102,/grphome/grp_tomo_db1_d4/nobackup/archive/ExperimentRuns/sma2022-07-13-2/Vibrio_deltacomEA_002_rec.mrc,
+,,,chemosensory_array,,2025-06-11T17:59:31.765206,/grphome/grp_tomo_db1_d4/nobackup/archive/ExperimentRuns/sma2022-07-13-26/Vibrio_deltacomEA_026_rec.mrc,/home/jp32405/groups/fslg_imagseg/jackson/Napari/Annotations/chemosensory_array__2025-06-11T17:59:31.765206.npy
+90.0,587.8059539287124,733.8971506042353,pilii,jackson,2025-06-12T10:01:02.575512,/grphome/grp_tomo_db1_d4/nobackup/archive/ExperimentRuns/sma2022-07-13-51/Vibrio_deltacomEA_051_rec.mrc,
+90.0,683.7419928875572,929.2578117567921,flagellar_motor,jackson,2025-06-12T10:01:15.430495,/grphome/grp_tomo_db1_d4/nobackup/archive/ExperimentRuns/sma2022-07-13-51/Vibrio_deltacomEA_051_rec.mrc,
+,,,chemosensory_array,jackson,2025-06-12T10:02:57.766026,/grphome/grp_tomo_db1_d4/nobackup/archive/ExperimentRuns/sma2022-07-13-44/Vibrio_deltacomEA_044_rec.mrc,/home/jp32405/groups/fslg_imagseg/jackson/Napari/Annotations/chemosensory_array_jackson_2025-06-12T10:02:57.766026.npy
+99.0,662.919018985759,909.3076777960158,flagellar_motor,,2025-06-16T11:20:46.599341,/grphome/grp_tomo_db1_d4/nobackup/archive/ExperimentRuns/sma2022-07-13-51/Vibrio_deltacomEA_051_rec.mrc,

@@ -1,0 +1,3 @@
+z,y,x,label,user,timestamp,source_path,mask_path
+,,,chemosensory_array,,2025-06-11T17:59:31.765206,/grphome/grp_tomo_db1_d4/nobackup/archive/ExperimentRuns/sma2022-07-13-26/Vibrio_deltacomEA_026_rec.mrc,/home/jp32405/groups/fslg_imagseg/jackson/Napari/Annotations/chemosensory_array__2025-06-11T17:59:31.765206.npy
+,,,chemosensory_array,jackson,2025-06-12T10:02:57.766026,/grphome/grp_tomo_db1_d4/nobackup/archive/ExperimentRuns/sma2022-07-13-44/Vibrio_deltacomEA_044_rec.mrc,/home/jp32405/groups/fslg_imagseg/jackson/Napari/Annotations/chemosensory_array_jackson_2025-06-12T10:02:57.766026.npy
