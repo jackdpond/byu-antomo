@@ -217,6 +217,10 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
             current_z_original = current_z_reduced * z_step
             # Get the 2D mask from the current slice
             mask_2d = layer.data[current_z_reduced]
+            # Debugging statements
+            print("[DEBUG] Saving mask for z-slice (reduced):", current_z_reduced)
+            print("[DEBUG] mask_2d shape:", mask_2d.shape)
+            print("[DEBUG] mask_2d unique values:", np.unique(mask_2d))
             # Create a new mask with the original tomogram dimensions
             original_shape = (mask_2d.shape[0] * y_step, mask_2d.shape[1] * x_step)
             scaled_mask = np.zeros(original_shape, dtype=np.uint8)
@@ -230,6 +234,7 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
                 scaled_mask = fill_mask_gaps(scaled_mask, y_step)
             if x_step > 1:
                 scaled_mask = fill_mask_gaps(scaled_mask.T, x_step).T
+            print("[DEBUG] scaled_mask unique values:", np.unique(scaled_mask))
             # Save the scaled and filled mask with original z-slice in filename
             mask_path = os.path.join(shared_dir, f"{label}_{user}_{timestamp}_slice_{current_z_original:03d}.npy")
             np.save(mask_path, scaled_mask)
@@ -410,6 +415,11 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
                         tomogram_shape = viewer.layers['Tomogram'].data.shape
                         mask_3d = np.zeros(tomogram_shape, dtype=np.uint8)
                         z_slice = int(row['z'] / z_step)
+                        # Debugging statements
+                        print("[DEBUG] Tomogram shape:", tomogram_shape)
+                        print("[DEBUG] Reduced mask shape:", reduced_mask.shape)
+                        print("[DEBUG] Assigning to z-slice:", z_slice)
+                        print("[DEBUG] Mask unique values:", np.unique(reduced_mask))
                         mask_3d[z_slice] = reduced_mask
                         layer = viewer.add_labels(mask_3d, name=display_layer_name)
                         layer.mode = 'pan_zoom'  # Not editable
