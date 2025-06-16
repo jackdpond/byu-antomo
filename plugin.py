@@ -80,7 +80,7 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
             name = f"{label}_points"
             if name not in viewer.layers:
                 point_color = 'red' if label == 'pilus' else 'blue'
-                labels_layer = viewer.add_points(name=name, ndim=3, size=4, face_color=point_color)
+                labels_layer = viewer.add_points(name=name, ndim=3, size=30, face_color=point_color)
                 labels_layer.mode = 'add'
                 # Set the layer as selected for immediate editing
                 viewer.layers.selection.active = labels_layer
@@ -340,7 +340,7 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
                             viewer.layers.remove(display_layer_name)
                         if label in ["pilus", "flagellar_motor"]:
                             coords = np.array([[row['z'], row['y'], row['x']]])
-                            layer = viewer.add_points(coords, name=display_layer_name, ndim=3, size=6, face_color='yellow')
+                            layer = viewer.add_points(coords, name=display_layer_name, ndim=3, size=30, face_color='yellow')
                             layer.mode = 'pan_zoom'  # Not editable
                             layer.editable = False
                             # Jump to correct z-slice
