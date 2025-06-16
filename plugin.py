@@ -34,14 +34,25 @@ def mrc_to_np(filepath):
         data = mrc.data.astype(np.float64)
         return data
 
+def get_reduction_factors():
+    return (
+        int(plugin_config.get('tomogram_z_step', 2)),
+        int(plugin_config.get('tomogram_y_step', 1)),
+        int(plugin_config.get('tomogram_x_step', 1)),
+    )
+
+def get_tomogram_layer(viewer):
+    for lyr in viewer.layers:
+        if lyr.name == 'Tomogram' and hasattr(lyr, 'data') and hasattr(lyr.data, 'shape'):
+            return lyr
+    return None
+
 def process_tomogram(data):
     """ Simple tomogram processing - uses contrast stretching to improve contrast. """
     print("[DEBUG] Starting process_tomogram...")
     start = time.time()
     # Use the configured steps, defaulting to 1 if not set
-    z_step = int(plugin_config.get('tomogram_z_step', 2))
-    y_step = int(plugin_config.get('tomogram_y_step', 1))
-    x_step = int(plugin_config.get('tomogram_x_step', 1))
+    z_step, y_step, x_step = get_reduction_factors()
     data = data[::z_step, ::y_step, ::x_step]
     p2, p98 = np.percentile(data, (2, 98))
     print(f"[DEBUG] Percentiles computed in {time.time() - start:.2f} seconds. p2={p2}, p98={p98}")
@@ -93,11 +104,7 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
             name = f"{label}_mask"
             if name not in viewer.layers:
                 # Always get the Tomogram layer for shape
-                image_layer = None
-                for lyr in viewer.layers:
-                    if lyr.name == 'Tomogram' and hasattr(lyr, 'data') and hasattr(lyr.data, 'shape'):
-                        image_layer = lyr
-                        break
+                image_layer = get_tomogram_layer(viewer)
                 if image_layer is None:
                     show_error("⚠️ Could not find Tomogram layer to determine mask shape.")
                     return
@@ -176,9 +183,7 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
         }
 
         # Get the current step factors
-        z_step = int(plugin_config.get('tomogram_z_step', 2))
-        y_step = int(plugin_config.get('tomogram_y_step', 1))
-        x_step = int(plugin_config.get('tomogram_x_step', 1))
+        z_step, y_step, x_step = get_reduction_factors()
 
         if label in ["pilus", "flagellar_motor", "ribosome"]:
             layer = viewer.layers[layer_name]
@@ -217,11 +222,7 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
                 # Convert shapes to mask for the current z-slice
                 shapes_layer = layer
                 # Get the tomogram shape from the image layer
-                image_layer = None
-                for lyr in viewer.layers:
-                    if hasattr(lyr, 'data') and hasattr(lyr.data, 'shape') and lyr.name == 'Tomogram':
-                        image_layer = lyr
-                        break
+                image_layer = get_tomogram_layer(viewer)
                 if image_layer is None:
                     show_error("⚠️ Could not find Tomogram layer to determine mask shape.")
                     return
@@ -368,9 +369,7 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
                             viewer.layers.remove(display_layer_name)
                         if label in ["pilus", "flagellar_motor", "ribosome"]:
                             # Get reduction factors
-                            z_step = int(plugin_config.get('tomogram_z_step', 2))
-                            y_step = int(plugin_config.get('tomogram_y_step', 1))
-                            x_step = int(plugin_config.get('tomogram_x_step', 1))
+                            z_step, y_step, x_step = get_reduction_factors()
                             # Divide coordinates by step factors to match reduced tomogram
                             coords = np.array([[row['z'] / z_step, row['y'] / y_step, row['x'] / x_step]])
                             layer = viewer.add_points(coords, name=display_layer_name, ndim=3, size=10, face_color='yellow')
@@ -381,9 +380,7 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
                             jump_to_z_slice(viewer, z)
                         elif label == "chemosensory_array" and pd.notna(row['mask_path']):
                             # Get reduction factors
-                            z_step = int(plugin_config.get('tomogram_z_step', 2))
-                            y_step = int(plugin_config.get('tomogram_y_step', 1))
-                            x_step = int(plugin_config.get('tomogram_x_step', 1))
+                            z_step, y_step, x_step = get_reduction_factors()
                             # Load the 2D mask
                             mask_2d = np.load(row['mask_path'])
                             # Downsample mask to match reduced tomogram shape
@@ -406,9 +403,7 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
                             jump_to_z_slice(viewer, z_slice)
                         elif label in ["cell", "storage_granule"] and pd.notna(row['z']) and pd.notna(row['y']) and pd.notna(row['x']) and pd.notna(row['width']) and pd.notna(row['height']):
                             # Get reduction factors
-                            z_step = int(plugin_config.get('tomogram_z_step', 2))
-                            y_step = int(plugin_config.get('tomogram_y_step', 1))
-                            x_step = int(plugin_config.get('tomogram_x_step', 1))
+                            z_step, y_step, x_step = get_reduction_factors()
                             # Convert center and size to reduced tomogram coordinates
                             z = row['z'] / z_step
                             y = row['y'] / y_step
