@@ -57,7 +57,7 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
     # Create shared inputs
     label_widget = widgets.ComboBox(
         name='label',
-        choices=["pilii", "flagellar_motor", "chemosensory_array"],
+        choices=["pilus", "flagellar_motor", "chemosensory_array"],
         label='Label'
     )
     user_widget = widgets.LineEdit(
@@ -76,10 +76,10 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
         label = label_widget.value
         user = user_widget.value
         
-        if label in ["pilii", "flagellar_motor"]:
+        if label in ["pilus", "flagellar_motor"]:
             name = f"{label}_points"
             if name not in viewer.layers:
-                point_color = 'red' if label == 'pilii' else 'blue'
+                point_color = 'red' if label == 'pilus' else 'blue'
                 labels_layer = viewer.add_points(name=name, ndim=3, size=4, face_color=point_color)
                 labels_layer.mode = 'add'
                 # Set the layer as selected for immediate editing
@@ -113,7 +113,7 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
         user = user_widget.value
         
         # Check if the annotation layer exists before saving
-        layer_name = f"{label}_points" if label in ["pilii", "flagellar_motor"] else f"{label}_mask"
+        layer_name = f"{label}_points" if label in ["pilus", "flagellar_motor"] else f"{label}_mask"
         if layer_name not in viewer.layers:
             show_error(f"⚠️ No {label} annotation layer found. Please add an annotation layer before saving.")
             return
@@ -155,17 +155,27 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
         # Define column order
         columns = ["z", "y", "x", "label", "user", "timestamp", "source_path", "mask_path"]
 
-        if label in ["pilii", "flagellar_motor"]:
+        # Get the current step factors
+        z_step = plugin_config.get('tomogram_z_step', 2)
+        y_step = plugin_config.get('tomogram_y_step', 1)
+        x_step = plugin_config.get('tomogram_x_step', 1)
+
+        if label in ["pilus", "flagellar_motor"]:
             layer = viewer.layers[layer_name]
             if not layer:
                 show_error(f"⚠️ No layer named {layer_name}")
                 return
             coords = layer.data
+            # Scale coordinates by step factors to get original tomogram coordinates
+            scaled_coords = coords.copy()
+            scaled_coords[:, 0] *= z_step
+            scaled_coords[:, 1] *= y_step
+            scaled_coords[:, 2] *= x_step
             # Create DataFrame with coordinates and other columns
             df = pd.DataFrame({
-                "z": coords[:, 0],
-                "y": coords[:, 1],
-                "x": coords[:, 2],
+                "z": scaled_coords[:, 0],
+                "y": scaled_coords[:, 1],
+                "x": scaled_coords[:, 2],
                 "label": label,
                 "user": user,
                 "timestamp": timestamp,
@@ -181,19 +191,37 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
                 show_error(f"⚠️ No layer named {layer_name}")
                 return
             
-            # Get current z-slice
-            current_z = viewer.dims.current_step[0]
+            # Get current z-slice from the reduced tomogram
+            current_z_reduced = viewer.dims.current_step[0]
+            # Scale it to get the original tomogram slice number
+            current_z_original = current_z_reduced * z_step
             
-            # Extract the 2D mask for the current slice
-            mask_2d = layer.data[current_z]
+            # Get the 2D mask from the current slice
+            mask_2d = layer.data[current_z_reduced]
             
-            # Save the 2D mask with z-slice in filename
-            mask_path = os.path.join(shared_dir, f"{label}_{user}_{timestamp}_slice_{current_z:03d}.npy")
-            np.save(mask_path, mask_2d)
+            # Create a new mask with the original tomogram dimensions
+            original_shape = (mask_2d.shape[0] * y_step, mask_2d.shape[1] * x_step)
+            scaled_mask = np.zeros(original_shape, dtype=np.uint8)
+            
+            # Scale up the mask coordinates
+            for i in range(mask_2d.shape[0]):
+                for j in range(mask_2d.shape[1]):
+                    if mask_2d[i, j] == 1:
+                        scaled_mask[i * y_step, j * x_step] = 1
+            
+            # Fill in the gaps created by scaling
+            if y_step > 1:
+                scaled_mask = fill_mask_gaps(scaled_mask, y_step)
+            if x_step > 1:
+                scaled_mask = fill_mask_gaps(scaled_mask.T, x_step).T
+            
+            # Save the scaled and filled mask with original z-slice in filename
+            mask_path = os.path.join(shared_dir, f"{label}_{user}_{timestamp}_slice_{current_z_original:03d}.npy")
+            np.save(mask_path, scaled_mask)
             
             # Create DataFrame with all columns in correct order
             df = pd.DataFrame([{
-                "z": current_z,  # Store the z-slice in the CSV
+                "z": current_z_original,  # Store the original z-slice in the CSV
                 "y": None,
                 "x": None,
                 "label": label,
@@ -310,7 +338,7 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
                         display_layer_name = f"[DISPLAY] {label} {idx}"
                         if display_layer_name in viewer.layers:
                             viewer.layers.remove(display_layer_name)
-                        if label in ["pilii", "flagellar_motor"]:
+                        if label in ["pilus", "flagellar_motor"]:
                             coords = np.array([[row['z'], row['y'], row['x']]])
                             layer = viewer.add_points(coords, name=display_layer_name, ndim=3, size=6, face_color='yellow')
                             layer.mode = 'pan_zoom'  # Not editable
@@ -550,7 +578,7 @@ def create_tomogram_navigator_widget(viewer, saved_annotations_widget=None, conf
             dot_row.max_width = 260
             dot_row.style = {'margin': '0'}
             for label, color in zip([
-                'pilii', 'flagellar_motor', 'chemosensory_array'],
+                'pilus', 'flagellar_motor', 'chemosensory_array'],
                 ['#e74c3c', '#3498db', '#9b59b6']):
                 count = (ann_rows['label'] == label).sum()
                 for _ in range(count):
@@ -618,3 +646,42 @@ def jump_to_z_slice(viewer, z):
     scrolled_axis = viewer.dims.order[0]
     # Use a singleShot timer to set after the layer is added
     QTimer.singleShot(100, lambda: viewer.dims.set_current_step(scrolled_axis, z))
+
+def fill_mask_gaps(mask, step):
+    """Fill gaps in a binary mask created by coordinate scaling.
+    
+    Args:
+        mask: 2D binary mask
+        step: Reduction factor (how many pixels were skipped)
+    
+    Returns:
+        Filled mask where gaps between ones are filled
+    """
+    # Create a copy to avoid modifying the original
+    filled_mask = mask.copy()
+    
+    # For each row
+    for i in range(mask.shape[0]):
+        # Find where we have ones
+        ones = np.where(mask[i] == 1)[0]
+        if len(ones) > 1:
+            # For each pair of ones
+            for j in range(len(ones) - 1):
+                # If they're close enough to be connected (within step-1 pixels)
+                if ones[j+1] - ones[j] <= step:
+                    # Fill all pixels between them
+                    filled_mask[i, ones[j]:ones[j+1]+1] = 1
+    
+    # For each column
+    for j in range(mask.shape[1]):
+        # Find where we have ones
+        ones = np.where(mask[:, j] == 1)[0]
+        if len(ones) > 1:
+            # For each pair of ones
+            for i in range(len(ones) - 1):
+                # If they're close enough to be connected (within step-1 pixels)
+                if ones[i+1] - ones[i] <= step:
+                    # Fill all pixels between them
+                    filled_mask[ones[i]:ones[i+1]+1, j] = 1
+    
+    return filled_mask
