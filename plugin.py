@@ -11,6 +11,8 @@ from skimage import exposure
 import json
 import time
 from qtpy.QtCore import QTimer
+from qtpy.QtWidgets import QApplication
+from qtpy.QtCore import Qt
 
 CONFIG_PATH = os.path.expanduser('~/.napari_plugin_config.json')
 
@@ -35,7 +37,11 @@ def process_tomogram(data):
     """ Simple tomogram processing - uses contrast stretching to improve contrast. """
     print("[DEBUG] Starting process_tomogram...")
     start = time.time()
-    data = data[::2, :, :]
+    # Use the configured steps, defaulting to 1 if not set
+    z_step = plugin_config.get('tomogram_z_step', 2)
+    y_step = plugin_config.get('tomogram_y_step', 1)
+    x_step = plugin_config.get('tomogram_x_step', 1)
+    data = data[::z_step, ::y_step, ::x_step]
     p2, p98 = np.percentile(data, (2, 98))
     print(f"[DEBUG] Percentiles computed in {time.time() - start:.2f} seconds. p2={p2}, p98={p98}")
     start2 = time.time()
@@ -174,11 +180,20 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
             if not layer:
                 show_error(f"⚠️ No layer named {layer_name}")
                 return
-            mask_path = os.path.join(shared_dir, f"{label}_{user}_{timestamp}.npy")
-            np.save(mask_path, layer.data)
+            
+            # Get current z-slice
+            current_z = viewer.dims.current_step[0]
+            
+            # Extract the 2D mask for the current slice
+            mask_2d = layer.data[current_z]
+            
+            # Save the 2D mask with z-slice in filename
+            mask_path = os.path.join(shared_dir, f"{label}_{user}_{timestamp}_slice_{current_z:03d}.npy")
+            np.save(mask_path, mask_2d)
+            
             # Create DataFrame with all columns in correct order
             df = pd.DataFrame([{
-                "z": None,
+                "z": current_z,  # Store the z-slice in the CSV
                 "y": None,
                 "x": None,
                 "label": label,
@@ -304,15 +319,26 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
                             z = int(row['z'])
                             jump_to_z_slice(viewer, z)
                         elif label == "chemosensory_array" and pd.notna(row['mask_path']):
-                            mask = np.load(row['mask_path'])
-                            layer = viewer.add_labels(mask, name=display_layer_name)
+                            # Load the 2D mask
+                            mask_2d = np.load(row['mask_path'])
+                            
+                            # Get the tomogram shape
+                            tomogram_shape = viewer.layers['Tomogram'].data.shape
+                            
+                            # Create a new 3D array filled with zeros
+                            mask_3d = np.zeros(tomogram_shape, dtype=np.uint8)
+                            
+                            # Place the 2D mask at the correct z-slice
+                            z_slice = int(row['z'])
+                            mask_3d[z_slice] = mask_2d
+                            
+                            # Add the mask to the viewer
+                            layer = viewer.add_labels(mask_3d, name=display_layer_name)
                             layer.mode = 'pan_zoom'  # Not editable
                             layer.editable = False
-                            # Jump to correct z-slice (use first nonzero z)
-                            z_indices = np.argwhere(mask)
-                            if z_indices.size > 0:
-                                z = int(z_indices[0][0])
-                                jump_to_z_slice(viewer, z)
+                            
+                            # Jump to the correct z-slice
+                            jump_to_z_slice(viewer, z_slice)
                         else:
                             show_error(f"Cannot display annotation: {label}")
                     return on_click
@@ -346,7 +372,10 @@ def load_plugin_config():
     # Load config from disk or return defaults
     default = {
         'annotation_dir': os.path.expanduser('~/groups/fslg_imagseg/jackson/Napari/Annotations'),
-        'tomo_ids_csv': os.path.expanduser('~/groups/fslg_imagseg/jackson/Napari/tomo_ids.csv')
+        'tomo_ids_csv': os.path.expanduser('~/groups/fslg_imagseg/jackson/Napari/tomo_ids.csv'),
+        'tomogram_z_step': 2,  # Default to taking every second slice in Z
+        'tomogram_y_step': 1,  # Default to no skipping in Y
+        'tomogram_x_step': 1   # Default to no skipping in X
     }
     if os.path.exists(CONFIG_PATH):
         try:
@@ -373,11 +402,69 @@ def create_config_dialog(refresh_callbacks=None):
     dialog.append(widgets.Label(value="Plugin Settings"))
     annotation_dir_edit = widgets.FileEdit(mode='d', value=plugin_config['annotation_dir'], label="Annotation Directory")
     tomo_ids_edit = widgets.FileEdit(mode='r', value=plugin_config['tomo_ids_csv'], label="Tomo IDs CSV")
+    
+    # Add tomogram step controls
+    steps_container = widgets.Container(layout='vertical')
+    steps_container.append(widgets.Label(value="Tomogram Steps:"))
+    
+    # Store default values
+    default_steps = {
+        'z': 2,
+        'y': 1,
+        'x': 1
+    }
+    
+    z_step_edit = widgets.SpinBox(
+        value=plugin_config.get('tomogram_z_step', default_steps['z']),
+        min=1,
+        max=10,
+        label="Z Step"
+    )
+    y_step_edit = widgets.SpinBox(
+        value=plugin_config.get('tomogram_y_step', default_steps['y']),
+        min=1,
+        max=10,
+        label="Y Step"
+    )
+    x_step_edit = widgets.SpinBox(
+        value=plugin_config.get('tomogram_x_step', default_steps['x']),
+        min=1,
+        max=10,
+        label="X Step"
+    )
+    
+    # Add change handlers for step controls
+    def on_step_change():
+        if (z_step_edit.value != plugin_config.get('tomogram_z_step', default_steps['z']) or
+            y_step_edit.value != plugin_config.get('tomogram_y_step', default_steps['y']) or
+            x_step_edit.value != plugin_config.get('tomogram_x_step', default_steps['x'])):
+            show_info("⚠️ Changing tomogram steps will affect the resolution of newly loaded tomograms. Existing annotations will not be affected.")
+    
+    z_step_edit.changed.connect(on_step_change)
+    y_step_edit.changed.connect(on_step_change)
+    x_step_edit.changed.connect(on_step_change)
+    
+    # Add reset button
+    def reset_steps():
+        z_step_edit.value = default_steps['z']
+        y_step_edit.value = default_steps['y']
+        x_step_edit.value = default_steps['x']
+        show_info("✅ Tomogram steps reset to defaults")
+    
+    reset_button = widgets.PushButton(text="Reset Steps to Defaults")
+    reset_button.clicked.connect(reset_steps)
+    
+    steps_container.extend([z_step_edit, y_step_edit, x_step_edit, reset_button])
+    dialog.append(steps_container)
+    
     save_button = widgets.PushButton(text="Save")
 
     def save_settings():
         plugin_config['annotation_dir'] = annotation_dir_edit.value
         plugin_config['tomo_ids_csv'] = tomo_ids_edit.value
+        plugin_config['tomogram_z_step'] = z_step_edit.value
+        plugin_config['tomogram_y_step'] = y_step_edit.value
+        plugin_config['tomogram_x_step'] = x_step_edit.value
         save_plugin_config(plugin_config)
         # Call refresh callbacks if provided
         if refresh_callbacks:
@@ -476,6 +563,8 @@ def create_tomogram_navigator_widget(viewer, saved_annotations_widget=None, conf
         while len(viewer.layers) > 0:
             viewer.layers.pop()
         try:
+            # Set cursor to spinning icon
+            QApplication.setOverrideCursor(Qt.WaitCursor)
             data = mrc_to_np(file_path)
             data = process_tomogram(data)
             data = rescale(data)
@@ -488,6 +577,9 @@ def create_tomogram_navigator_widget(viewer, saved_annotations_widget=None, conf
                         break
         except Exception as e:
             show_error(f"Failed to load tomogram: {e}")
+        finally:
+            # Reset cursor back to normal
+            QApplication.restoreOverrideCursor()
     load_button.clicked.connect(load_tomogram)
     button_row.append(load_button)
     config_button = widgets.PushButton(text="\u2699")
