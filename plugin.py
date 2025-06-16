@@ -208,35 +208,15 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
             })
             df = df[columns_dict[label]]
 
-        elif label in ["chemosensory_array", "cell", "storage_granule"]:
+        elif label == "chemosensory_array":
             layer = viewer.layers[layer_name]
             if not layer:
                 show_error(f"⚠️ No layer named {layer_name}")
                 return
             current_z_reduced = viewer.dims.current_step[0]
             current_z_original = current_z_reduced * z_step
-            if label == "chemosensory_array":
-                # Get the 2D mask from the current slice
-                mask_2d = layer.data[current_z_reduced]
-            else:
-                # Convert shapes to mask for the current z-slice
-                shapes_layer = layer
-                # Get the tomogram shape from the image layer
-                image_layer = get_tomogram_layer(viewer)
-                if image_layer is None:
-                    show_error("⚠️ Could not find Tomogram layer to determine mask shape.")
-                    return
-                shape = image_layer.data.shape
-                mask_2d = np.zeros((shape[1], shape[2]), dtype=np.uint8)
-                # Only use shapes on the current z-slice
-                for poly in shapes_layer.data:
-                    # poly is (N, 3) for 3D, but we want only those on this z-slice
-                    if np.allclose(poly[:, 0], current_z_reduced):
-                        # Get y, x coordinates
-                        poly_yx = poly[:, 1:3]
-                        from skimage.draw import polygon
-                        rr, cc = polygon(poly_yx[:, 0], poly_yx[:, 1], mask_2d.shape)
-                        mask_2d[rr, cc] = 1
+            # Get the 2D mask from the current slice
+            mask_2d = layer.data[current_z_reduced]
             # Create a new mask with the original tomogram dimensions
             original_shape = (mask_2d.shape[0] * y_step, mask_2d.shape[1] * x_step)
             scaled_mask = np.zeros(original_shape, dtype=np.uint8)
@@ -262,6 +242,44 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
                 "source_path": source_path,
                 "mask_path": mask_path
             }])
+            df = df[columns_dict[label]]
+        elif label in ["cell", "storage_granule"]:
+            layer = viewer.layers[layer_name]
+            if not layer:
+                show_error(f"⚠️ No layer named {layer_name}")
+                return
+            current_z_reduced = viewer.dims.current_step[0]
+            current_z_original = current_z_reduced * z_step
+            shapes_layer = layer
+            rows = []
+            for poly in shapes_layer.data:
+                # Only use shapes on the current z-slice
+                if np.allclose(poly[:, 0], current_z_reduced):
+                    # Get y, x coordinates
+                    poly_yx = poly[:, 1:3]
+                    min_y, max_y = np.min(poly_yx[:, 0]), np.max(poly_yx[:, 0])
+                    min_x, max_x = np.min(poly_yx[:, 1]), np.max(poly_yx[:, 1])
+                    # Scale center and size to original tomogram coordinates
+                    center_y = ((min_y + max_y) / 2) * y_step
+                    center_x = ((min_x + max_x) / 2) * x_step
+                    width = (max_x - min_x) * x_step
+                    height = (max_y - min_y) * y_step
+                    center_z = current_z_original
+                    rows.append({
+                        "z": center_z,
+                        "y": center_y,
+                        "x": center_x,
+                        "width": width,
+                        "height": height,
+                        "label": label,
+                        "user": user,
+                        "timestamp": timestamp,
+                        "source_path": source_path,
+                    })
+            if not rows:
+                show_error(f"⚠️ No shapes found on current z-slice for {label}.")
+                return
+            df = pd.DataFrame(rows)
             df = df[columns_dict[label]]
 
         else:
