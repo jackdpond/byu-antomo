@@ -38,9 +38,9 @@ def process_tomogram(data):
     print("[DEBUG] Starting process_tomogram...")
     start = time.time()
     # Use the configured steps, defaulting to 1 if not set
-    z_step = plugin_config.get('tomogram_z_step', 2)
-    y_step = plugin_config.get('tomogram_y_step', 1)
-    x_step = plugin_config.get('tomogram_x_step', 1)
+    z_step = int(plugin_config.get('tomogram_z_step', 2))
+    y_step = int(plugin_config.get('tomogram_y_step', 1))
+    x_step = int(plugin_config.get('tomogram_x_step', 1))
     data = data[::z_step, ::y_step, ::x_step]
     p2, p98 = np.percentile(data, (2, 98))
     print(f"[DEBUG] Percentiles computed in {time.time() - start:.2f} seconds. p2={p2}, p98={p98}")
@@ -57,7 +57,7 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
     # Create shared inputs
     label_widget = widgets.ComboBox(
         name='label',
-        choices=["pilus", "flagellar_motor", "chemosensory_array"],
+        choices=["pilus", "flagellar_motor", "chemosensory_array", "ribosome", "cell", "storage_granule"],
         label='Label'
     )
     user_widget = widgets.LineEdit(
@@ -76,15 +76,19 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
         label = label_widget.value
         user = user_widget.value
         
-        if label in ["pilus", "flagellar_motor"]:
+        if label in ["pilus", "flagellar_motor", "ribosome"]:
             name = f"{label}_points"
             if name not in viewer.layers:
-                point_color = 'red' if label == 'pilus' else 'blue'
-                labels_layer = viewer.add_points(name=name, ndim=3, size=30, face_color=point_color)
+                point_color = (
+                    'red' if label == 'pilus' else
+                    'blue' if label == 'flagellar_motor' else
+                    'green'  # ribosome
+                )
+                labels_layer = viewer.add_points(name=name, ndim=3, size=8, face_color=point_color)
                 labels_layer.mode = 'add'
                 # Set the layer as selected for immediate editing
                 viewer.layers.selection.active = labels_layer
-        elif label == "chemosensory_array":
+        elif label in ["chemosensory_array", "cell", "storage_granule"]:
             name = f"{label}_mask"
             if name not in viewer.layers:
                 image_layer = viewer.layers.selection.active
@@ -94,9 +98,13 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
                     # Create labels layer
                     labels_layer = viewer.add_labels(mask, name=name)
                     # Set properties to ensure it's editable
-                    labels_layer.mode = 'paint'  # Start in paint mode
-                    labels_layer.selected_label = 3  # Set label to 1 (for painting)
-                    labels_layer.brush_size = 20  # Set a reasonable brush size
+                    if label == "chemosensory_array":
+                        labels_layer.mode = 'paint'  # Start in paint mode
+                        labels_layer.selected_label = 3  # Set label to 1 (for painting)
+                        labels_layer.brush_size = 20  # Set a reasonable brush size
+                    else:
+                        labels_layer.mode = 'fill'  # Start in polygon (fill) mode
+                        labels_layer.selected_label = 3  # Set label to 1 (for filling)
                     # Set the layer as selected for immediate editing
                     viewer.layers.selection.active = labels_layer
         show_info(f"✅ {label} annotation layer added successfully")
@@ -113,7 +121,7 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
         user = user_widget.value
         
         # Check if the annotation layer exists before saving
-        layer_name = f"{label}_points" if label in ["pilus", "flagellar_motor"] else f"{label}_mask"
+        layer_name = f"{label}_points" if label in ["pilus", "flagellar_motor", "ribosome"] else f"{label}_mask"
         if layer_name not in viewer.layers:
             show_error(f"⚠️ No {label} annotation layer found. Please add an annotation layer before saving.")
             return
@@ -156,11 +164,11 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
         columns = ["z", "y", "x", "label", "user", "timestamp", "source_path", "mask_path"]
 
         # Get the current step factors
-        z_step = plugin_config.get('tomogram_z_step', 2)
-        y_step = plugin_config.get('tomogram_y_step', 1)
-        x_step = plugin_config.get('tomogram_x_step', 1)
+        z_step = int(plugin_config.get('tomogram_z_step', 2))
+        y_step = int(plugin_config.get('tomogram_y_step', 1))
+        x_step = int(plugin_config.get('tomogram_x_step', 1))
 
-        if label in ["pilus", "flagellar_motor"]:
+        if label in ["pilus", "flagellar_motor", "ribosome"]:
             layer = viewer.layers[layer_name]
             if not layer:
                 show_error(f"⚠️ No layer named {layer_name}")
@@ -185,7 +193,7 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
             # Ensure columns are in the correct order
             df = df[columns]
 
-        elif label == "chemosensory_array":
+        elif label in ["chemosensory_array", "cell", "storage_granule"]:
             layer = viewer.layers[layer_name]
             if not layer:
                 show_error(f"⚠️ No layer named {layer_name}")
@@ -338,15 +346,15 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
                         display_layer_name = f"[DISPLAY] {label} {idx}"
                         if display_layer_name in viewer.layers:
                             viewer.layers.remove(display_layer_name)
-                        if label in ["pilus", "flagellar_motor"]:
+                        if label in ["pilus", "flagellar_motor", "ribosome"]:
                             coords = np.array([[row['z'], row['y'], row['x']]])
-                            layer = viewer.add_points(coords, name=display_layer_name, ndim=3, size=30, face_color='yellow')
+                            layer = viewer.add_points(coords, name=display_layer_name, ndim=3, size=10, face_color='yellow')
                             layer.mode = 'pan_zoom'  # Not editable
                             layer.editable = False
                             # Jump to correct z-slice
                             z = int(row['z'])
                             jump_to_z_slice(viewer, z)
-                        elif label == "chemosensory_array" and pd.notna(row['mask_path']):
+                        elif label in ["chemosensory_array", "cell", "storage_granule"] and pd.notna(row['mask_path']):
                             # Load the 2D mask
                             mask_2d = np.load(row['mask_path'])
                             
