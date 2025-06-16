@@ -354,103 +354,94 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
         
         # Use config for annotation directory
         shared_dir = plugin_config['annotation_dir']
-        csv_path = os.path.join(shared_dir, "annotations_all.csv")
-        
-        if not os.path.exists(csv_path):
+        import glob
+        csv_files = glob.glob(os.path.join(shared_dir, "*_annotations.csv"))
+        if not csv_files:
             stats_container.append(widgets.Label(value="No annotations found"))
             return
         
-        try:
-            df = pd.read_csv(csv_path)
-            # Filter for current source
-            df_source = df[df['source_path'] == source_path]
-            
-            if df_source.empty:
-                stats_container.append(widgets.Label(value="No annotations for this tomogram"))
-                return
-            
-            # Show all annotations as clickable buttons
-            for idx, row in df_source.iterrows():
-                label = row['label']
-                label_container = widgets.Container(layout='horizontal')
-                label_container.style = {'margin': '2px 0'}  # Reduce vertical spacing
-                label_name = widgets.Label(value=f"{label}:")
-                label_name.min_width = 100
-                label_container.append(label_name)
-                # Create a button for this annotation
-                btn = widgets.PushButton(text="Show", name=f"show_{idx}")
-                def make_on_click(row=row, label=label, idx=idx):
-                    def on_click():
-                        # Remove any previous display layer for this annotation
-                        display_layer_name = f"[DISPLAY] {label} {idx}"
-                        if display_layer_name in viewer.layers:
-                            viewer.layers.remove(display_layer_name)
-                        if label in ["pilus", "flagellar_motor", "ribosome"]:
-                            # Get reduction factors
-                            z_step, y_step, x_step = get_reduction_factors()
-                            # Divide coordinates by step factors to match reduced tomogram
-                            coords = np.array([[row['z'] / z_step, row['y'] / y_step, row['x'] / x_step]])
-                            layer = viewer.add_points(coords, name=display_layer_name, ndim=3, size=10, face_color='yellow')
-                            layer.mode = 'pan_zoom'  # Not editable
-                            layer.editable = False
-                            # Jump to correct z-slice in reduced tomogram
-                            z = int(row['z'] / z_step)
-                            jump_to_z_slice(viewer, z)
-                        elif label == "chemosensory_array" and pd.notna(row['mask_path']):
-                            # Get reduction factors
-                            z_step, y_step, x_step = get_reduction_factors()
-                            # Load the 2D mask
-                            mask_2d = np.load(row['mask_path'])
-                            # Downsample mask to match reduced tomogram shape
-                            reduced_mask = mask_2d
-                            if y_step > 1 or x_step > 1:
-                                reduced_mask = downscale_local_mean(mask_2d, (y_step, x_step))
-                                reduced_mask = (reduced_mask > 0.5).astype(np.uint8)  # Binarize
-                            # Get the tomogram shape
-                            tomogram_shape = viewer.layers['Tomogram'].data.shape
-                            # Create a new 3D array filled with zeros
-                            mask_3d = np.zeros(tomogram_shape, dtype=np.uint8)
-                            # Place the 2D mask at the correct z-slice (in reduced space)
-                            z_slice = int(row['z'] / z_step)
-                            mask_3d[z_slice] = reduced_mask
-                            # Add the mask to the viewer
-                            layer = viewer.add_labels(mask_3d, name=display_layer_name)
-                            layer.mode = 'pan_zoom'  # Not editable
-                            layer.editable = False
-                            # Jump to the correct z-slice
-                            jump_to_z_slice(viewer, z_slice)
-                        elif label in ["cell", "storage_granule"] and pd.notna(row['z']) and pd.notna(row['y']) and pd.notna(row['x']) and pd.notna(row['width']) and pd.notna(row['height']):
-                            # Get reduction factors
-                            z_step, y_step, x_step = get_reduction_factors()
-                            # Convert center and size to reduced tomogram coordinates
-                            z = row['z'] / z_step
-                            y = row['y'] / y_step
-                            x = row['x'] / x_step
-                            width = row['width'] / x_step
-                            height = row['height'] / y_step
-                            # Rectangle vertices in (z, y, x)
-                            y0 = y - height / 2
-                            y1 = y + height / 2
-                            x0 = x - width / 2
-                            x1 = x + width / 2
-                            rect = np.array([
-                                [z, y0, x0],
-                                [z, y0, x1],
-                                [z, y1, x1],
-                                [z, y1, x0],
-                            ])
-                            layer = viewer.add_shapes([rect], name=display_layer_name, shape_type='polygon', edge_color='yellow', face_color='yellow', opacity=0.4)
-                            layer.mode = 'pan_zoom'  # Not editable
-                            layer.editable = False
-                            jump_to_z_slice(viewer, int(z))
-                        else:
-                            show_error(f"Cannot display annotation: {label}")
-                    return on_click
-                btn.clicked.connect(make_on_click())
-                label_container.append(btn)
-                stats_container.append(label_container)
-        except Exception as e:
-            stats_container.append(widgets.Label(value=f"Error reading annotations: {str(e)}"))
+        # Aggregate all annotations for this tomogram
+        all_rows = []
+        for csv_path in csv_files:
+            try:
+                df = pd.read_csv(csv_path)
+                if 'source_path' in df.columns:
+                    df_source = df[df['source_path'] == source_path]
+                    if not df_source.empty:
+                        all_rows.append(df_source)
+            except Exception as e:
+                stats_container.append(widgets.Label(value=f"Error reading {os.path.basename(csv_path)}: {str(e)}"))
+        if not all_rows:
+            stats_container.append(widgets.Label(value="No annotations for this tomogram"))
+            return
+        df_source = pd.concat(all_rows, ignore_index=True)
+        # Show all annotations as clickable buttons
+        for idx, row in df_source.iterrows():
+            label = row['label']
+            label_container = widgets.Container(layout='horizontal')
+            label_container.style = {'margin': '2px 0'}  # Reduce vertical spacing
+            label_name = widgets.Label(value=f"{label}:")
+            label_name.min_width = 100
+            label_container.append(label_name)
+            # Create a button for this annotation
+            btn = widgets.PushButton(text="Show", name=f"show_{idx}")
+            def make_on_click(row=row, label=label, idx=idx):
+                def on_click():
+                    # Remove any previous display layer for this annotation
+                    display_layer_name = f"[DISPLAY] {label} {idx}"
+                    if display_layer_name in viewer.layers:
+                        viewer.layers.remove(display_layer_name)
+                    if label in ["pilus", "flagellar_motor", "ribosome"]:
+                        z_step, y_step, x_step = get_reduction_factors()
+                        coords = np.array([[row['z'] / z_step, row['y'] / y_step, row['x'] / x_step]])
+                        layer = viewer.add_points(coords, name=display_layer_name, ndim=3, size=10, face_color='yellow')
+                        layer.mode = 'pan_zoom'  # Not editable
+                        layer.editable = False
+                        z = int(row['z'] / z_step)
+                        jump_to_z_slice(viewer, z)
+                    elif label == "chemosensory_array" and pd.notna(row['mask_path']):
+                        z_step, y_step, x_step = get_reduction_factors()
+                        mask_2d = np.load(row['mask_path'])
+                        from skimage.transform import downscale_local_mean
+                        reduced_mask = mask_2d
+                        if y_step > 1 or x_step > 1:
+                            reduced_mask = downscale_local_mean(mask_2d, (y_step, x_step))
+                            reduced_mask = (reduced_mask > 0.5).astype(np.uint8)  # Binarize
+                        tomogram_shape = viewer.layers['Tomogram'].data.shape
+                        mask_3d = np.zeros(tomogram_shape, dtype=np.uint8)
+                        z_slice = int(row['z'] / z_step)
+                        mask_3d[z_slice] = reduced_mask
+                        layer = viewer.add_labels(mask_3d, name=display_layer_name)
+                        layer.mode = 'pan_zoom'  # Not editable
+                        layer.editable = False
+                        jump_to_z_slice(viewer, z_slice)
+                    elif label in ["cell", "storage_granule"] and pd.notna(row['z']) and pd.notna(row['y']) and pd.notna(row['x']) and pd.notna(row['width']) and pd.notna(row['height']):
+                        z_step, y_step, x_step = get_reduction_factors()
+                        z = row['z'] / z_step
+                        y = row['y'] / y_step
+                        x = row['x'] / x_step
+                        width = row['width'] / x_step
+                        height = row['height'] / y_step
+                        y0 = y - height / 2
+                        y1 = y + height / 2
+                        x0 = x - width / 2
+                        x1 = x + width / 2
+                        rect = np.array([
+                            [z, y0, x0],
+                            [z, y0, x1],
+                            [z, y1, x1],
+                            [z, y1, x0],
+                        ])
+                        layer = viewer.add_shapes([rect], name=display_layer_name, shape_type='polygon', edge_color='yellow', face_color='yellow', opacity=0.4)
+                        layer.mode = 'pan_zoom'  # Not editable
+                        layer.editable = False
+                        jump_to_z_slice(viewer, int(z))
+                    else:
+                        show_error(f"Cannot display annotation: {label}")
+                return on_click
+            btn.clicked.connect(make_on_click())
+            label_container.append(btn)
+            stats_container.append(label_container)
     
     refresh_button.clicked.connect(update_stats)
     
