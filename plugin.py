@@ -399,13 +399,12 @@ plugin_config = load_plugin_config()
 
 def create_config_dialog(refresh_callbacks=None):
     dialog = widgets.Container(layout='vertical')
+    dialog.max_width = 600  # Make the dialog wider to fit everything
+    
+    # Main settings
     dialog.append(widgets.Label(value="Plugin Settings"))
     annotation_dir_edit = widgets.FileEdit(mode='d', value=plugin_config['annotation_dir'], label="Annotation Directory")
     tomo_ids_edit = widgets.FileEdit(mode='r', value=plugin_config['tomo_ids_csv'], label="Tomo IDs CSV")
-    
-    # Add tomogram step controls
-    steps_container = widgets.Container(layout='vertical')
-    steps_container.append(widgets.Label(value="Tomogram Steps:"))
     
     # Store default values
     default_steps = {
@@ -414,23 +413,33 @@ def create_config_dialog(refresh_callbacks=None):
         'x': 1
     }
     
+    # Create step controls in a horizontal layout
+    steps_row = widgets.Container(layout='horizontal')
+    steps_row.style = {'margin': '5px 0'}  # Add some vertical margin
+    
+    # Label on the left
+    steps_label = widgets.Label(value="Tomogram Steps:")
+    steps_label.min_width = 150  # Match width with other labels
+    steps_row.append(steps_label)
+    
+    # Step controls in the middle
     z_step_edit = widgets.SpinBox(
         value=plugin_config.get('tomogram_z_step', default_steps['z']),
         min=1,
         max=10,
-        label="Z Step"
+        label="Z"
     )
     y_step_edit = widgets.SpinBox(
         value=plugin_config.get('tomogram_y_step', default_steps['y']),
         min=1,
         max=10,
-        label="Y Step"
+        label="Y"
     )
     x_step_edit = widgets.SpinBox(
         value=plugin_config.get('tomogram_x_step', default_steps['x']),
         min=1,
         max=10,
-        label="X Step"
+        label="X"
     )
     
     # Add change handlers for step controls
@@ -444,21 +453,29 @@ def create_config_dialog(refresh_callbacks=None):
     y_step_edit.changed.connect(on_step_change)
     x_step_edit.changed.connect(on_step_change)
     
-    # Add reset button
+    # Add step controls to the row
+    steps_row.extend([z_step_edit, y_step_edit, x_step_edit])
+    
+    # Add reset button on the right
     def reset_steps():
         z_step_edit.value = default_steps['z']
         y_step_edit.value = default_steps['y']
         x_step_edit.value = default_steps['x']
         show_info("✅ Tomogram steps reset to defaults")
     
-    reset_button = widgets.PushButton(text="Reset Steps to Defaults")
+    reset_button = widgets.PushButton(text="Reset")
+    reset_button.min_width = 80
     reset_button.clicked.connect(reset_steps)
+    steps_row.append(reset_button)
     
-    steps_container.extend([z_step_edit, y_step_edit, x_step_edit, reset_button])
-    dialog.append(steps_container)
+    # Add all widgets to dialog
+    dialog.append(annotation_dir_edit)
+    dialog.append(tomo_ids_edit)
+    dialog.append(steps_row)
     
+    # Save button
     save_button = widgets.PushButton(text="Save")
-
+    
     def save_settings():
         plugin_config['annotation_dir'] = annotation_dir_edit.value
         plugin_config['tomo_ids_csv'] = tomo_ids_edit.value
@@ -472,11 +489,10 @@ def create_config_dialog(refresh_callbacks=None):
                 cb()
         show_info("Plugin settings saved and widgets refreshed.")
         dialog.hide()
-
+    
     save_button.clicked.connect(save_settings)
-    dialog.append(annotation_dir_edit)
-    dialog.append(tomo_ids_edit)
     dialog.append(save_button)
+    
     return dialog
 
 def create_tomogram_navigator_widget(viewer, saved_annotations_widget=None, config_refresh_callback=None):
