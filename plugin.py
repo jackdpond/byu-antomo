@@ -11,7 +11,7 @@ from skimage import exposure
 import json
 import time
 from qtpy.QtCore import QTimer
-from qtpy.QtWidgets import QApplication
+from qtpy.QtWidgets import QApplication, QMessageBox
 from qtpy.QtCore import Qt
 from skimage.transform import downscale_local_mean
 import dask.array as da
@@ -418,65 +418,35 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
             delete_btn = widgets.PushButton(text="🗑️", name=f"delete_{idx}")
             def make_delete_click(row=row, label=label, idx=idx):
                 def on_delete():
-                    # Create confirmation dialog
-                    confirm_dialog = widgets.Container(layout='vertical')
-                    confirm_dialog.max_width = 300
-                    
-                    # Add message
-                    confirm_dialog.append(widgets.Label(value=f"Are you sure you would like to delete this annotation of label type {label}?"))
-                    
-                    # Create button container
-                    button_container = widgets.Container(layout='horizontal')
-                    
-                    # Add cancel button
-                    cancel_btn = widgets.PushButton(text="Cancel")
-                    def on_cancel():
-                        confirm_dialog.hide()
-                    cancel_btn.clicked.connect(on_cancel)
-                    button_container.append(cancel_btn)
-                    
-                    # Add delete button
-                    confirm_delete_btn = widgets.PushButton(text="Delete")
-                    def on_confirm_delete():
+                    msg = QMessageBox()
+                    msg.setIcon(QMessageBox.Warning)
+                    msg.setWindowTitle("Confirm Deletion")
+                    msg.setText(f"Are you sure you would like to delete this annotation of label type {label}?")
+                    msg.setStandardButtons(QMessageBox.Cancel | QMessageBox.Ok)
+                    msg.button(QMessageBox.Ok).setText("Delete")
+                    msg.button(QMessageBox.Cancel).setText("Cancel")
+                    ret = msg.exec_()
+                    if ret == QMessageBox.Ok:
                         # Get the CSV file path
                         csv_path = os.path.join(shared_dir, f"{label}_annotations.csv")
                         if not os.path.exists(csv_path):
                             show_error(f"⚠️ No annotations found for {label}.")
                             return
-                        
                         # Read the CSV file
                         df = pd.read_csv(csv_path)
-                        
                         # Remove the row matching this annotation
                         df = df[~((df['source_path'] == row['source_path']) & 
                                 (df['z'] == row['z']) & 
                                 (df['y'] == row['y']) & 
                                 (df['x'] == row['x']))]
-                        
                         # Save the updated dataframe
                         df.to_csv(csv_path, index=False)
-                        
                         # Remove the display layer if it exists
                         display_layer_name = f"[DISPLAY] {label} {idx}"
                         if display_layer_name in viewer.layers:
                             viewer.layers.remove(display_layer_name)
-                        
                         show_info(f"✅ Removed {label} annotation")
-                        
-                        # Refresh the stats
                         update_stats()
-                        
-                        # Close the dialog
-                        confirm_dialog.hide()
-                    
-                    confirm_delete_btn.clicked.connect(on_confirm_delete)
-                    button_container.append(confirm_delete_btn)
-                    
-                    # Add buttons to dialog
-                    confirm_dialog.append(button_container)
-                    
-                    # Show the dialog
-                    confirm_dialog.show()
                 
                 return on_delete
             delete_btn.clicked.connect(make_delete_click())
