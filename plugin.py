@@ -117,7 +117,8 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
                     labels_layer.brush_size = 20  # Set a reasonable brush size
                     viewer.layers.selection.active = labels_layer
                 else:
-                    shapes_layer = viewer.add_shapes(name=name, ndim=3, shape_type='polygon', edge_color='magenta', face_color='magenta', opacity=0.4)
+                    shapes_layer = viewer.add_shapes(name=name, ndim=3, shape_type='rectangle', edge_color='magenta', face_color='magenta', opacity=0.4)
+                    shapes_layer.mode = 'add_rectangle'
                     viewer.layers.selection.active = shapes_layer
         show_info(f"✅ {label} annotation layer added successfully")
     
@@ -227,7 +228,7 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
             # Scale up the mask coordinates
             for i in range(mask_2d.shape[0]):
                 for j in range(mask_2d.shape[1]):
-                    if mask_2d[i, j] == 1:
+                    if mask_2d[i, j] != 0:
                         scaled_mask[i * y_step, j * x_step] = 1
             # Fill in the gaps created by scaling
             if y_step > 1:
