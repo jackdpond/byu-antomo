@@ -180,21 +180,31 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
 
         if label in ["pilus", "flagellar_motor", "ribosome"]:
             coords = layer.data
-            scaled_coords = coords.copy()
-            scaled_coords[:, 0] *= z_step
-            scaled_coords[:, 1] *= y_step
-            scaled_coords[:, 2] *= x_step
+            if len(coords) == 0:
+                show_error(f"⚠️ No points found in {label} layer.")
+                return
             
-            df = pd.DataFrame({
-                "z": scaled_coords[:, 0],
-                "y": scaled_coords[:, 1],
-                "x": scaled_coords[:, 2],
-                "label": label,
-                "user": user,
-                "timestamp": timestamp,
-                "source_path": source_path,
-            })
+            # Create a row for each point
+            rows = []
+            for point in coords:
+                # Scale coordinates by step factors to get original tomogram coordinates
+                scaled_z = point[0] * z_step
+                scaled_y = point[1] * y_step
+                scaled_x = point[2] * x_step
+                
+                rows.append({
+                    "z": scaled_z,
+                    "y": scaled_y,
+                    "x": scaled_x,
+                    "label": label,
+                    "user": user,
+                    "timestamp": timestamp,
+                    "source_path": source_path,
+                })
+            
+            df = pd.DataFrame(rows)
             df = df[columns_dict[label]]
+            show_info(f"✅ Saved {len(df)} {label} points")
 
         elif label == "chemosensory_array":
             current_z_reduced = viewer.dims.current_step[0]
@@ -228,6 +238,7 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
                 "mask_path": mask_path
             }])
             df = df[columns_dict[label]]
+            show_info(f"✅ Saved {label} mask for slice {current_z_original}")
             
         elif label in ["cell", "storage_granule"]:
             current_z_reduced = viewer.dims.current_step[0]
@@ -260,6 +271,7 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
             
             df = pd.DataFrame(rows)
             df = df[columns_dict[label]]
+            show_info(f"✅ Saved {len(df)} {label} shapes")
         
         # Save to CSV
         csv_path = os.path.join(shared_dir, f"{label}_annotations.csv")
