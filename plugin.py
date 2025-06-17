@@ -28,11 +28,16 @@ def rescale(array):
     print(f"[DEBUG] Finished rescale in {time.time() - start:.2f} seconds.")
     return result
 
-def mrc_to_np(filepath):
-    """ Converts .mrc file (or .rec file) to numpy array. """
-    with mrcfile.open(filepath, 'r') as mrc:
-        data = mrc.data.astype(np.float64)
-        return data
+def load_and_stretch(filepath):
+    with mrcfile.mmap(filepath, permissive=True) as mrc:
+        data = mrc.data  # memory-mapped array
+        # Compute percentiles using every 10th slice
+        step = max(1, data.shape[0] // 100)  # at least every 10th, but more for huge stacks
+        sampled_slices = data[::step]
+        p2, p98 = np.percentile(sampled_slices, (2, 98))
+        # Apply contrast stretching to all slices
+        stretched = exposure.rescale_intensity(data, in_range=(p2, p98))
+    return stretched
 
 def get_reduction_factors():
     return (
@@ -690,9 +695,8 @@ def create_tomogram_navigator_widget(viewer, saved_annotations_widget=None, conf
             print(f"[DEBUG] Whatever comes first in {time.time() - start_time:.2f} seconds")
             QApplication.setOverrideCursor(Qt.WaitCursor)
             start_time = time.time()
-            data = mrc_to_np(file_path)
+            data = load_and_stretch(file_path)
             print(f"[DEBUG] Processed tomogram in {time.time() - start_time:.2f} seconds")
-            data = process_tomogram(data)
             data = rescale(data)
             viewer.add_image(data, name="Tomogram", metadata={'source': file_path})
             show_info(f"Loaded tomogram: {file_path}")
