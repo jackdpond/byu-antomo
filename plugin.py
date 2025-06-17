@@ -14,25 +14,53 @@ from qtpy.QtCore import QTimer
 from qtpy.QtWidgets import QApplication
 from qtpy.QtCore import Qt
 from skimage.transform import downscale_local_mean
+import dask.array as da
 
 CONFIG_PATH = os.path.expanduser('~/.napari_plugin_config.json')
 
-def rescale(array):
-    """ Rescales array values so that all values are between 0 and 1. """
-    print("[DEBUG] Starting rescale...")
-    start = time.time()
-    maximum = np.max(array)
-    minimum = np.min(array)
-    range = maximum - minimum
-    result = (array - minimum) / range
-    print(f"[DEBUG] Finished rescale in {time.time() - start:.2f} seconds.")
-    return result
+def get_tomogram_source_path(viewer):
+    """Get the source path of the tomogram layer."""
+    for layer in viewer.layers:
+        if layer.name == "Tomogram":
+            # Try to get path from metadata first
+            if hasattr(layer, 'metadata') and layer.metadata:
+                source_path = layer.metadata.get('source')
+                if source_path:
+                    return os.path.abspath(source_path) if not os.path.isabs(source_path) else source_path
+            
+            # Fallback to source.path
+            if hasattr(layer, 'source') and hasattr(layer.source, 'path'):
+                source_path = layer.source.path
+                if source_path:
+                    return source_path
+    return "unknown"
 
-def mrc_to_np(filepath):
-    """ Converts .mrc file (or .rec file) to numpy array. """
-    with mrcfile.open(filepath, 'r') as mrc:
-        data = mrc.data.astype(np.float64)
-        return data
+def load_and_stretch(filepath):
+    """
+    Load tomogram as a Dask array and apply per-slice contrast stretching for fast, clear display.
+    Returns a Dask array suitable for napari.
+    """
+    with mrcfile.mmap(filepath, permissive=True) as mrc:
+        data = mrc.data  # This is a numpy memmap array
+        # Wrap as Dask array, chunked by z-slice
+        dask_data = da.from_array(data, chunks=(1, data.shape[1], data.shape[2]))
+
+    def stretch_slice(slice2d):
+        # Compute 2nd and 98th percentiles for this slice
+        p2, p98 = np.percentile(slice2d, (2, 98))
+        # Avoid degenerate case
+        if p2 == p98:
+            return np.zeros_like(slice2d, dtype=np.float32)
+        # Stretch
+        return exposure.rescale_intensity(slice2d, in_range=(p2, p98)).astype(np.float32)
+
+    # Map the stretching function over each z-slice
+    stretched = dask_data.map_blocks(
+        lambda block: np.stack([stretch_slice(s) for s in block]),
+        dtype=np.float32,
+        chunks=dask_data.chunks
+    )
+    return stretched
 
 def get_reduction_factors():
     return (
@@ -47,23 +75,41 @@ def get_tomogram_layer(viewer):
             return lyr
     return None
 
-def process_tomogram(data):
-    """ Simple tomogram processing - uses contrast stretching to improve contrast. """
-    print("[DEBUG] Starting process_tomogram...")
-    start = time.time()
-    # Use the configured steps, defaulting to 1 if not set
-    z_step, y_step, x_step = get_reduction_factors()
-    data = data[::z_step, ::y_step, ::x_step]
-    p2, p98 = np.percentile(data, (2, 98))
-    print(f"[DEBUG] Percentiles computed in {time.time() - start:.2f} seconds. p2={p2}, p98={p98}")
-    start2 = time.time()
-    data_rescale = exposure.rescale_intensity(data, in_range=(p2, p98))
-    print(f"[DEBUG] rescale_intensity finished in {time.time() - start2:.2f} seconds.")
-    print(f"[DEBUG] Finished process_tomogram in {time.time() - start:.2f} seconds.")
-    return data_rescale
+def create_point_layer(viewer, label, color):
+    """Create a points layer for point-based annotations."""
+    name = f"{label}_points"
+    if name not in viewer.layers:
+        layer = viewer.add_points(name=name, ndim=3, size=8, face_color=color)
+        layer.mode = 'add'
+        viewer.layers.selection.active = layer
+        return layer
+    return viewer.layers[name]
+
+def create_mask_layer(viewer, label, shape):
+    """Create a mask or shapes layer for mask-based annotations."""
+    name = f"{label}_mask"
+    if name not in viewer.layers:
+        if label == "chemosensory_array":
+            mask = np.zeros(shape, dtype=np.uint8)
+            layer = viewer.add_labels(mask, name=name)
+            layer.mode = 'paint'
+            layer.selected_label = 3
+            layer.brush_size = 20
+        else:
+            layer = viewer.add_shapes(
+                name=name, 
+                ndim=3, 
+                shape_type='rectangle',
+                edge_color='magenta',
+                face_color='magenta',
+                opacity=0.4
+            )
+            layer.mode = 'add_rectangle'
+        viewer.layers.selection.active = layer
+        return layer
+    return viewer.layers[name]
 
 def create_annotation_widget(viewer, config_refresh_callback=None):
-    # Create the container with vertical layout
     container = widgets.Container(layout='vertical')
     
     # Create shared inputs
@@ -77,98 +123,44 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
         label='User'
     )
     
-    # Add inputs to container
     container.extend([label_widget, user_widget])
     
-    # Create button container with vertical layout
-    button_container = widgets.Container(layout='vertical')
-    
-    # Add Annotation button
     def add_annotation():
         label = label_widget.value
         user = user_widget.value
         
         if label in ["pilus", "flagellar_motor", "ribosome"]:
-            name = f"{label}_points"
-            if name not in viewer.layers:
-                point_color = (
-                    'red' if label == 'pilus' else
-                    'blue' if label == 'flagellar_motor' else
-                    'green'  # ribosome
-                )
-                labels_layer = viewer.add_points(name=name, ndim=3, size=8, face_color=point_color)
-                labels_layer.mode = 'add'
-                # Set the layer as selected for immediate editing
-                viewer.layers.selection.active = labels_layer
-        elif label in ["chemosensory_array", "cell", "storage_granule"]:
-            name = f"{label}_mask"
-            if name not in viewer.layers:
-                # Always get the Tomogram layer for shape
-                image_layer = get_tomogram_layer(viewer)
-                if image_layer is None:
-                    show_error("⚠️ Could not find Tomogram layer to determine mask shape.")
-                    return
-                shape = image_layer.data.shape
-                if label == "chemosensory_array":
-                    mask = np.zeros(shape, dtype=np.uint8)
-                    labels_layer = viewer.add_labels(mask, name=name)
-                    labels_layer.mode = 'paint'  # Start in paint mode
-                    labels_layer.selected_label = 3  # Set label to 1 (for painting)
-                    labels_layer.brush_size = 20  # Set a reasonable brush size
-                    viewer.layers.selection.active = labels_layer
-                else:
-                    shapes_layer = viewer.add_shapes(name=name, ndim=3, shape_type='rectangle', edge_color='magenta', face_color='magenta', opacity=0.4)
-                    shapes_layer.mode = 'add_rectangle'
-                    viewer.layers.selection.active = shapes_layer
+            color = {
+                'pilus': 'red',
+                'flagellar_motor': 'blue',
+                'ribosome': 'green'
+            }[label]
+            layer = create_point_layer(viewer, label, color)
+        else:
+            image_layer = get_tomogram_layer(viewer)
+            if image_layer is None:
+                show_error("⚠️ Could not find Tomogram layer to determine mask shape.")
+                return
+            layer = create_mask_layer(viewer, label, image_layer.data.shape)
+        
         show_info(f"✅ {label} annotation layer added successfully")
     
-    add_button = widgets.PushButton(
-        text="Add Annotation",
-        name='add_button'
-    )
+    add_button = widgets.PushButton(text="Add Annotation", name='add_button')
     add_button.clicked.connect(add_annotation)
     
-    # Save Annotation button
     def save_annotation():
         label = label_widget.value
         user = user_widget.value
         
-        # Check if the annotation layer exists before saving
+        # Check if the annotation layer exists
         layer_name = f"{label}_points" if label in ["pilus", "flagellar_motor", "ribosome"] else f"{label}_mask"
         if layer_name not in viewer.layers:
             show_error(f"⚠️ No {label} annotation layer found. Please add an annotation layer before saving.")
             return
 
-        # Save annotation logic
         timestamp = datetime.datetime.now().isoformat()
-        # Get source path from the tomogram layer
-        source_path = None
-        for layer in viewer.layers:
-            if layer.name == "Tomogram":
-                print(f"Found Tomogram layer: {layer}")
-                print(f"Layer source: {layer.source}")
-                print(f"Layer metadata: {layer.metadata}")
-                # Try to get path from metadata first
-                if hasattr(layer, 'metadata') and layer.metadata:
-                    source_path = layer.metadata.get('source')
-                    if source_path:
-                        # Convert to absolute path if it's relative
-                        if not os.path.isabs(source_path):
-                            source_path = os.path.abspath(source_path)
-                        print(f"Found source path in metadata: {source_path}")
-                        break
-                
-                # Fallback to source.path if metadata doesn't have it
-                if hasattr(layer, 'source') and hasattr(layer.source, 'path'):
-                    source_path = layer.source.path
-                    if source_path:
-                        print(f"Found source path in layer.source: {source_path}")
-                        break
+        source_path = get_tomogram_source_path(viewer)
         
-        if source_path is None:
-            source_path = "unknown"  # Fallback if no path is found
-            print("No source path found, using 'unknown'")
-
         # Use config for annotation directory
         shared_dir = plugin_config['annotation_dir']
         os.makedirs(shared_dir, exist_ok=True)
@@ -183,21 +175,16 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
             "chemosensory_array": ["z", "label", "user", "timestamp", "source_path", "mask_path"],
         }
 
-        # Get the current step factors
         z_step, y_step, x_step = get_reduction_factors()
+        layer = viewer.layers[layer_name]
 
         if label in ["pilus", "flagellar_motor", "ribosome"]:
-            layer = viewer.layers[layer_name]
-            if not layer:
-                show_error(f"⚠️ No layer named {layer_name}")
-                return
             coords = layer.data
-            # Scale coordinates by step factors to get original tomogram coordinates
             scaled_coords = coords.copy()
             scaled_coords[:, 0] *= z_step
             scaled_coords[:, 1] *= y_step
             scaled_coords[:, 2] *= x_step
-            # Create DataFrame with coordinates and other columns
+            
             df = pd.DataFrame({
                 "z": scaled_coords[:, 0],
                 "y": scaled_coords[:, 1],
@@ -210,38 +197,30 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
             df = df[columns_dict[label]]
 
         elif label == "chemosensory_array":
-            layer = viewer.layers[layer_name]
-            if not layer:
-                show_error(f"⚠️ No layer named {layer_name}")
-                return
             current_z_reduced = viewer.dims.current_step[0]
             current_z_original = current_z_reduced * z_step
-            # Get the 2D mask from the current slice
             mask_2d = layer.data[current_z_reduced]
-            # Debugging statements
-            print("[DEBUG] Saving mask for z-slice (reduced):", current_z_reduced)
-            print("[DEBUG] mask_2d shape:", mask_2d.shape)
-            print("[DEBUG] mask_2d unique values:", np.unique(mask_2d))
-            # Create a new mask with the original tomogram dimensions
+            
             original_shape = (mask_2d.shape[0] * y_step, mask_2d.shape[1] * x_step)
             scaled_mask = np.zeros(original_shape, dtype=np.uint8)
+            
             # Scale up the mask coordinates
             for i in range(mask_2d.shape[0]):
                 for j in range(mask_2d.shape[1]):
                     if mask_2d[i, j] != 0:
                         scaled_mask[i * y_step, j * x_step] = 1
+            
             # Fill in the gaps created by scaling
             if y_step > 1:
                 scaled_mask = fill_mask_gaps(scaled_mask, y_step)
             if x_step > 1:
                 scaled_mask = fill_mask_gaps(scaled_mask.T, x_step).T
-            print("[DEBUG] scaled_mask unique values:", np.unique(scaled_mask))
-            # Save the scaled and filled mask with original z-slice in filename
+            
             mask_path = os.path.join(shared_dir, f"{label}_{user}_{timestamp}_slice_{current_z_original:03d}.npy")
             np.save(mask_path, scaled_mask)
-            # Create DataFrame with all columns in correct order
+            
             df = pd.DataFrame([{
-                "z": current_z_original,  # Store the original z-slice in the CSV
+                "z": current_z_original,
                 "label": label,
                 "user": user,
                 "timestamp": timestamp,
@@ -249,30 +228,26 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
                 "mask_path": mask_path
             }])
             df = df[columns_dict[label]]
+            
         elif label in ["cell", "storage_granule"]:
-            layer = viewer.layers[layer_name]
-            if not layer:
-                show_error(f"⚠️ No layer named {layer_name}")
-                return
             current_z_reduced = viewer.dims.current_step[0]
             current_z_original = current_z_reduced * z_step
             shapes_layer = layer
             rows = []
+            
             for poly in shapes_layer.data:
-                # Only use shapes on the current z-slice
                 if np.allclose(poly[:, 0], current_z_reduced):
-                    # Get y, x coordinates
                     poly_yx = poly[:, 1:3]
                     min_y, max_y = np.min(poly_yx[:, 0]), np.max(poly_yx[:, 0])
                     min_x, max_x = np.min(poly_yx[:, 1]), np.max(poly_yx[:, 1])
-                    # Scale center and size to original tomogram coordinates
+                    
                     center_y = ((min_y + max_y) / 2) * y_step
                     center_x = ((min_x + max_x) / 2) * x_step
                     width = (max_x - min_x) * x_step
                     height = (max_y - min_y) * y_step
-                    center_z = current_z_original
+                    
                     rows.append({
-                        "z": center_z,
+                        "z": current_z_original,
                         "y": center_y,
                         "x": center_x,
                         "width": width,
@@ -282,45 +257,23 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
                         "timestamp": timestamp,
                         "source_path": source_path,
                     })
-            if not rows:
-                show_error(f"⚠️ No shapes found on current z-slice for {label}.")
-                return
+            
             df = pd.DataFrame(rows)
             df = df[columns_dict[label]]
-
+        
+        # Save to CSV
+        csv_path = os.path.join(shared_dir, f"{label}_annotations.csv")
+        if os.path.exists(csv_path):
+            df.to_csv(csv_path, mode='a', header=False, index=False)
         else:
-            show_error("⚠️ Unknown label type.")
-            return
-
-        label_path = os.path.join(shared_dir, f"{label}_annotations.csv")
-        df.to_csv(label_path, mode='a', header=not os.path.exists(label_path), index=False)
-        show_info(f"✅ Successfully saved {label} annotation by {user} to {label_path}")
+            df.to_csv(csv_path, index=False)
+        
+        show_info(f"✅ Saved {len(df)} {label} annotations")
     
-    save_button = widgets.PushButton(
-        text="Save Annotation",
-        name='save_button'
-    )
+    save_button = widgets.PushButton(text="Save Annotation", name='save_button')
     save_button.clicked.connect(save_annotation)
     
-    # Add buttons to button container
-    button_container.extend([add_button, save_button])
-    
-    # Add button container to main container
-    container.append(button_container)
-    
-    # Config button at the bottom right
-    config_row = widgets.Container(layout='horizontal')
-    config_row.append(widgets.Label(value=""))  # Spacer
-    config_button = widgets.PushButton(text="\u2699")
-    config_button.min_width = 32
-    config_button.max_width = 32
-    def open_config():
-        dialog = create_config_dialog(refresh_callbacks=[lambda: config_refresh_callback() if config_refresh_callback else None])
-        dialog.show()
-    config_button.clicked.connect(open_config)
-    config_row.append(config_button)
-    container.append(config_row)
-
+    container.extend([add_button, save_button])
     return container
 
 def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
@@ -687,13 +640,11 @@ def create_tomogram_navigator_widget(viewer, saved_annotations_widget=None, conf
             viewer.layers.pop()
         try:
             # Set cursor to spinning icon
-            print(f"[DEBUG] Whatever comes first in {time.time() - start_time:.2f} seconds")
+            print(f"[DEBUG] Starting tomogram load in {time.time() - start_time:.2f} seconds")
             QApplication.setOverrideCursor(Qt.WaitCursor)
             start_time = time.time()
-            data = mrc_to_np(file_path)
+            data = load_and_stretch(file_path)
             print(f"[DEBUG] Processed tomogram in {time.time() - start_time:.2f} seconds")
-            data = process_tomogram(data)
-            data = rescale(data)
             viewer.add_image(data, name="Tomogram", metadata={'source': file_path})
             show_info(f"Loaded tomogram: {file_path}")
             if saved_annotations_widget is not None:
@@ -730,40 +681,9 @@ def jump_to_z_slice(viewer, z):
     QTimer.singleShot(100, lambda: viewer.dims.set_current_step(scrolled_axis, z))
 
 def fill_mask_gaps(mask, step):
-    """Fill gaps in a binary mask created by coordinate scaling.
-    
-    Args:
-        mask: 2D binary mask
-        step: Reduction factor (how many pixels were skipped)
-    
-    Returns:
-        Filled mask where gaps between ones are filled
-    """
-    # Create a copy to avoid modifying the original
-    filled_mask = mask.copy()
-    
-    # For each row
-    for i in range(mask.shape[0]):
-        # Find where we have ones
-        ones = np.where(mask[i] == 1)[0]
-        if len(ones) > 1:
-            # For each pair of ones
-            for j in range(len(ones) - 1):
-                # If they're close enough to be connected (within step-1 pixels)
-                if ones[j+1] - ones[j] <= step:
-                    # Fill all pixels between them
-                    filled_mask[i, ones[j]:ones[j+1]+1] = 1
-    
-    # For each column
-    for j in range(mask.shape[1]):
-        # Find where we have ones
-        ones = np.where(mask[:, j] == 1)[0]
-        if len(ones) > 1:
-            # For each pair of ones
-            for i in range(len(ones) - 1):
-                # If they're close enough to be connected (within step-1 pixels)
-                if ones[i+1] - ones[i] <= step:
-                    # Fill all pixels between them
-                    filled_mask[ones[i]:ones[i+1]+1, j] = 1
-    
-    return filled_mask
+    """Fill gaps in a scaled mask by interpolating between non-zero values."""
+    result = mask.copy()
+    for i in range(1, len(mask) - 1):
+        if mask[i-1] != 0 and mask[i+1] != 0:
+            result[i] = 1
+    return result
