@@ -11,7 +11,7 @@ from skimage import exposure
 import json
 import time
 from qtpy.QtCore import QTimer
-from qtpy.QtWidgets import QApplication
+from qtpy.QtWidgets import QApplication, QMessageBox
 from qtpy.QtCore import Qt
 from skimage.transform import downscale_local_mean
 import dask.array as da
@@ -180,21 +180,31 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
 
         if label in ["pilus", "flagellar_motor", "ribosome"]:
             coords = layer.data
-            scaled_coords = coords.copy()
-            scaled_coords[:, 0] *= z_step
-            scaled_coords[:, 1] *= y_step
-            scaled_coords[:, 2] *= x_step
+            if len(coords) == 0:
+                show_error(f"⚠️ No points found in {label} layer.")
+                return
             
-            df = pd.DataFrame({
-                "z": scaled_coords[:, 0],
-                "y": scaled_coords[:, 1],
-                "x": scaled_coords[:, 2],
-                "label": label,
-                "user": user,
-                "timestamp": timestamp,
-                "source_path": source_path,
-            })
+            # Create a row for each point
+            rows = []
+            for point in coords:
+                # Scale coordinates by step factors to get original tomogram coordinates
+                scaled_z = point[0] * z_step
+                scaled_y = point[1] * y_step
+                scaled_x = point[2] * x_step
+                
+                rows.append({
+                    "z": scaled_z,
+                    "y": scaled_y,
+                    "x": scaled_x,
+                    "label": label,
+                    "user": user,
+                    "timestamp": timestamp,
+                    "source_path": source_path,
+                })
+            
+            df = pd.DataFrame(rows)
             df = df[columns_dict[label]]
+            show_info(f"✅ Saved {len(df)} {label} points")
 
         elif label == "chemosensory_array":
             current_z_reduced = viewer.dims.current_step[0]
@@ -228,6 +238,7 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
                 "mask_path": mask_path
             }])
             df = df[columns_dict[label]]
+            show_info(f"✅ Saved {label} mask for slice {current_z_original}")
             
         elif label in ["cell", "storage_granule"]:
             current_z_reduced = viewer.dims.current_step[0]
@@ -260,6 +271,7 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
             
             df = pd.DataFrame(rows)
             df = df[columns_dict[label]]
+            show_info(f"✅ Saved {len(df)} {label} shapes")
         
         # Save to CSV
         csv_path = os.path.join(shared_dir, f"{label}_annotations.csv")
@@ -342,6 +354,7 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
             label_name = widgets.Label(value=f"{label}:")
             label_name.min_width = 100
             label_container.append(label_name)
+            
             # Create a button for this annotation
             btn = widgets.PushButton(text="Show", name=f"show_{idx}")
             def make_on_click(row=row, label=label, idx=idx):
@@ -369,11 +382,6 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
                         tomogram_shape = viewer.layers['Tomogram'].data.shape
                         mask_3d = np.zeros(tomogram_shape, dtype=np.uint8)
                         z_slice = int(row['z'] / z_step)
-                        # Debugging statements
-                        print("[DEBUG] Tomogram shape:", tomogram_shape)
-                        print("[DEBUG] Reduced mask shape:", reduced_mask.shape)
-                        print("[DEBUG] Assigning to z-slice:", z_slice)
-                        print("[DEBUG] Mask unique values:", np.unique(reduced_mask))
                         mask_3d[z_slice] = reduced_mask
                         layer = viewer.add_labels(mask_3d, name=display_layer_name)
                         layer.mode = 'pan_zoom'  # Not editable
@@ -405,11 +413,50 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
                 return on_click
             btn.clicked.connect(make_on_click())
             label_container.append(btn)
+            
+            # Add delete button with trashcan icon
+            delete_btn = widgets.PushButton(text="🗑️", name=f"delete_{idx}")
+            def make_delete_click(row=row, label=label, idx=idx):
+                def on_delete():
+                    msg = QMessageBox()
+                    msg.setIcon(QMessageBox.Warning)
+                    msg.setWindowTitle("Confirm Deletion")
+                    msg.setText(f"Are you sure you would like to delete this annotation of label type {label}?")
+                    msg.setStandardButtons(QMessageBox.Cancel | QMessageBox.Ok)
+                    msg.button(QMessageBox.Ok).setText("Delete")
+                    msg.button(QMessageBox.Cancel).setText("Cancel")
+                    ret = msg.exec_()
+                    if ret == QMessageBox.Ok:
+                        # Get the CSV file path
+                        csv_path = os.path.join(shared_dir, f"{label}_annotations.csv")
+                        if not os.path.exists(csv_path):
+                            show_error(f"⚠️ No annotations found for {label}.")
+                            return
+                        # Read the CSV file
+                        df = pd.read_csv(csv_path)
+                        # Remove the row matching this annotation
+                        df = df[~((df['source_path'] == row['source_path']) & 
+                                (df['z'] == row['z']) & 
+                                (df['y'] == row['y']) & 
+                                (df['x'] == row['x']))]
+                        # Save the updated dataframe
+                        df.to_csv(csv_path, index=False)
+                        # Remove the display layer if it exists
+                        display_layer_name = f"[DISPLAY] {label} {idx}"
+                        if display_layer_name in viewer.layers:
+                            viewer.layers.remove(display_layer_name)
+                        show_info(f"✅ Removed {label} annotation")
+                        update_stats()
+                
+                return on_delete
+            delete_btn.clicked.connect(make_delete_click())
+            delete_btn.min_width = 32
+            delete_btn.max_width = 32
+            label_container.append(delete_btn)
+            
             stats_container.append(label_container)
     
     refresh_button.clicked.connect(update_stats)
-    
-    # Initial update
     update_stats()
     
     # Add config button at the bottom right
