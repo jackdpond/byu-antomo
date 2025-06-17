@@ -640,12 +640,11 @@ def create_tomogram_navigator_widget(viewer, saved_annotations_widget=None, conf
             viewer.layers.pop()
         try:
             # Set cursor to spinning icon
-            print(f"[DEBUG] Whatever comes first in {time.time() - start_time:.2f} seconds")
+            print(f"[DEBUG] Starting tomogram load in {time.time() - start_time:.2f} seconds")
             QApplication.setOverrideCursor(Qt.WaitCursor)
             start_time = time.time()
             data = load_and_stretch(file_path)
             print(f"[DEBUG] Processed tomogram in {time.time() - start_time:.2f} seconds")
-            data = rescale(data)
             viewer.add_image(data, name="Tomogram", metadata={'source': file_path})
             show_info(f"Loaded tomogram: {file_path}")
             if saved_annotations_widget is not None:
