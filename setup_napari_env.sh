@@ -24,12 +24,27 @@ if ! command -v conda >/dev/null 2>&1; then
     exit 1
 fi
 
-# build conda environment
-if ! conda env create -n "$conda_name" -f "$env_yaml"; then
-    echo "Failed to create conda environment. Exiting environment setup."
-    exit 1
+# Check if environment already exists
+if conda env list | grep -q "^$conda_name "; then
+    echo "Environment '$conda_name' already exists. Installing/updating packages from $env_yaml..."
+    
+    # Install packages from yaml file into existing environment
+    if conda env update -n "$conda_name" -f "$env_yaml"; then
+        echo "Packages successfully installed/updated in existing environment '$conda_name'."
+    else
+        echo "Failed to install packages in existing environment. Exiting environment setup."
+        exit 1
+    fi
 else
-    echo "Conda environment $conda_name created successfully."
+    echo "Environment '$conda_name' does not exist. Creating new environment..."
+    
+    # build conda environment
+    if ! conda env create -n "$conda_name" -f "$env_yaml"; then
+        echo "Failed to create conda environment. Exiting environment setup."
+        exit 1
+    else
+        echo "Conda environment $conda_name created successfully."
+    fi
 fi
 
 # Set up alias for antomo in the environment
