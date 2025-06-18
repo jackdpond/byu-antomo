@@ -539,7 +539,14 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
 
     # At the end, in the config_row section:
     config_row = widgets.Container(layout='horizontal')
-    config_row.append(widgets.Label(value=""))  # Spacer
+    # Add a flexible spacer to push controls to the right
+    spacer = widgets.Label(value="")
+    spacer.min_width = 0
+    spacer.max_width = 16777215  # Large value to act as a flexible spacer
+    config_row.append(spacer)
+    config_row.append(prev_btn)
+    config_row.append(page_label)
+    config_row.append(next_btn)
     config_button = widgets.PushButton(text="\u2699")
     config_button.min_width = 32
     config_button.max_width = 32
@@ -547,9 +554,6 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
         dialog = create_config_dialog(refresh_callbacks=[lambda: config_refresh_callback() if config_refresh_callback else None])
         dialog.show()
     config_button.clicked.connect(open_config)
-    # Add nav_row inline with config button
-    config_row.append(nav_row)
-    config_row.append(config_button)
     container.append(config_row)
 
     return container
