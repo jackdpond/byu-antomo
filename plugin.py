@@ -15,6 +15,7 @@ from qtpy.QtWidgets import QApplication, QMessageBox
 from qtpy.QtCore import Qt
 from skimage.transform import downscale_local_mean
 import dask.array as da
+from scipy.ndimage import gaussian_filter1d
 
 CONFIG_PATH = os.path.expanduser('~/.napari_plugin_config.json')
 
@@ -35,9 +36,33 @@ def get_tomogram_source_path(viewer):
                     return source_path
     return "unknown"
 
+def adaptive_contrast_limits(image, fraction=0.005, bins=256):
+    t0 = time.time()
+    print("[adaptive_contrast_limits] Starting histogram computation...")
+    hist, bin_edges = np.histogram(image, bins=bins)
+    t1 = time.time()
+    print(f"[adaptive_contrast_limits] Histogram computed in {t1-t0:.4f} seconds.")
+    hist_smooth = gaussian_filter1d(hist, sigma=2)
+    print("[adaptive_contrast_limits] Smoothing histogram...")
+    t2 = time.time()
+    print(f"[adaptive_contrast_limits] Histogram smoothed in {t2-t1:.4f} seconds.")
+    threshold = hist_smooth.max() * fraction
+    print(f"[adaptive_contrast_limits] Threshold for min/max: {threshold}")
+    nonzero = np.where(hist_smooth > threshold)[0]
+    t3 = time.time()
+    print(f"[adaptive_contrast_limits] Nonzero bins found in {t3-t2:.4f} seconds.")
+    if len(nonzero) == 0:
+        print("[adaptive_contrast_limits] No bins above threshold, using min/max.")
+        return np.min(image), np.max(image)
+    low = bin_edges[nonzero[0]]
+    high = bin_edges[nonzero[-1]+1]  # +1 because bin_edges is len(hist)+1
+    t4 = time.time()
+    print(f"[adaptive_contrast_limits] Min/max found in {t4-t3:.4f} seconds. Total: {t4-t0:.4f} seconds.")
+    return low, high
+
 def load_and_stretch(filepath):
     """
-    Load tomogram as a Dask array and apply per-slice contrast stretching for fast, clear display.
+    Load tomogram as a Dask array and apply per-slice adaptive histogram-based contrast stretching for fast, clear display.
     Returns a Dask array suitable for napari.
     """
     with mrcfile.mmap(filepath, permissive=True) as mrc:
@@ -46,13 +71,10 @@ def load_and_stretch(filepath):
         dask_data = da.from_array(data, chunks=(1, data.shape[1], data.shape[2]))
 
     def stretch_slice(slice2d):
-        # Compute 2nd and 98th percentiles for this slice
-        p2, p98 = np.percentile(slice2d, (2, 98))
-        # Avoid degenerate case
-        if p2 == p98:
+        pmin, pmax = adaptive_contrast_limits(slice2d)
+        if pmin == pmax:
             return np.zeros_like(slice2d, dtype=np.float32)
-        # Stretch
-        return exposure.rescale_intensity(slice2d, in_range=(p2, p98)).astype(np.float32)
+        return exposure.rescale_intensity(slice2d, in_range=(pmin, pmax)).astype(np.float32)
 
     # Map the stretching function over each z-slice
     stretched = dask_data.map_blocks(
