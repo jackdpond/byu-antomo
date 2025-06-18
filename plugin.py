@@ -293,6 +293,20 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
     save_button.clicked.connect(save_annotation)
     
     container.extend([add_button, save_button])
+
+    # Add config button at the bottom right
+    config_row = widgets.Container(layout='horizontal')
+    config_row.append(widgets.Label(value=""))  # Spacer
+    config_button = widgets.PushButton(text="\u2699")
+    config_button.min_width = 32
+    config_button.max_width = 32
+    def open_config():
+        dialog = create_config_dialog(refresh_callbacks=[lambda: config_refresh_callback() if config_refresh_callback else None])
+        dialog.show()
+    config_button.clicked.connect(open_config)
+    config_row.append(config_button)
+    container.append(config_row)
+
     return container
 
 def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
@@ -307,9 +321,13 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
     refresh_button = widgets.PushButton(text="Refresh Stats")
     container.append(refresh_button)
     
-    # Create a sub-container for stats
+    # Create a scrollable sub-container for stats
+    stats_scroll = widgets.Container(layout='vertical')
+    stats_scroll.max_height = 300  # Set max height for scroll area
+    stats_scroll.scrollable = True  # Enable scrolling if supported
     stats_container = widgets.Container(layout='vertical')
-    container.append(stats_container)
+    stats_scroll.append(stats_container)
+    container.append(stats_scroll)
     
     def update_stats():
         # Clear only the stats container
