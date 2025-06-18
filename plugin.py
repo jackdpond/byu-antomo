@@ -326,7 +326,6 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
         dialog = create_config_dialog(refresh_callbacks=[lambda: config_refresh_callback() if config_refresh_callback else None])
         dialog.show()
     config_button.clicked.connect(open_config)
-    config_row.append(config_button)
     container.append(config_row)
 
     return container
@@ -351,6 +350,26 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
     annotations_per_page = 4
     current_page = {'value': 0}  # Use dict for mutability in closure
 
+    # Create pagination controls outside update_stats
+    nav_row = widgets.Container(layout='horizontal')
+    prev_btn = widgets.PushButton(text="Previous")
+    next_btn = widgets.PushButton(text="Next")
+    page_label = widgets.Label(value="Page 1 of 1")
+    nav_row.append(prev_btn)
+    nav_row.append(page_label)
+    nav_row.append(next_btn)
+
+    def prev_page():
+        if current_page['value'] > 0:
+            current_page['value'] -= 1
+            update_stats()
+    def next_page():
+        # total is set in update_stats, so we check after update
+        current_page['value'] += 1
+        update_stats()
+    prev_btn.clicked.connect(prev_page)
+    next_btn.clicked.connect(next_page)
+
     def update_stats():
         # Clear only the stats container
         while len(stats_container) > 0:
@@ -366,6 +385,9 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
                 break
         if not source_path or source_path == "unknown":
             stats_container.append(widgets.Label(value="No tomogram source found"))
+            page_label.value = "Page 1 of 1"
+            prev_btn.enabled = False
+            next_btn.enabled = False
             return
         # Use config for annotation directory
         shared_dir = plugin_config['annotation_dir']
@@ -373,6 +395,9 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
         csv_files = glob.glob(os.path.join(shared_dir, "*_annotations.csv"))
         if not csv_files:
             stats_container.append(widgets.Label(value="No annotations found"))
+            page_label.value = "Page 1 of 1"
+            prev_btn.enabled = False
+            next_btn.enabled = False
             return
         # Aggregate all annotations for this tomogram
         all_rows = []
@@ -387,10 +412,16 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
                 stats_container.append(widgets.Label(value=f"Error reading {os.path.basename(csv_path)}: {str(e)}"))
         if not all_rows:
             stats_container.append(widgets.Label(value="No annotations for this tomogram"))
+            page_label.value = "Page 1 of 1"
+            prev_btn.enabled = False
+            next_btn.enabled = False
             return
         df_source = pd.concat(all_rows, ignore_index=True)
         total = len(df_source)
         # Pagination logic
+        max_page = max(1, (total-1)//annotations_per_page+1)
+        if current_page['value'] >= max_page:
+            current_page['value'] = max_page-1
         start = current_page['value'] * annotations_per_page
         end = start + annotations_per_page
         page_rows = df_source.iloc[start:end]
@@ -498,30 +529,15 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
             delete_btn.max_width = 32
             label_container.append(delete_btn)
             stats_container.append(label_container)
-        # Pagination controls
-        nav_row = widgets.Container(layout='horizontal')
-        prev_btn = widgets.PushButton(text="Previous")
-        next_btn = widgets.PushButton(text="Next")
-        page_label = widgets.Label(value=f"Page {current_page['value']+1} of {max(1, (total-1)//annotations_per_page+1)}")
-        def prev_page():
-            if current_page['value'] > 0:
-                current_page['value'] -= 1
-                update_stats()
-        def next_page():
-            if end < total:
-                current_page['value'] += 1
-                update_stats()
-        prev_btn.clicked.connect(prev_page)
-        next_btn.clicked.connect(next_page)
-        nav_row.append(prev_btn)
-        nav_row.append(page_label)
-        nav_row.append(next_btn)
-        stats_container.append(nav_row)
-    
+        # Update pagination controls
+        page_label.value = f"Page {current_page['value']+1} of {max_page}"
+        prev_btn.enabled = current_page['value'] > 0
+        next_btn.enabled = (current_page['value']+1) < max_page
+
     refresh_button.clicked.connect(update_stats)
     update_stats()
-    
-    # Add config button at the bottom right
+
+    # At the end, in the config_row section:
     config_row = widgets.Container(layout='horizontal')
     config_row.append(widgets.Label(value=""))  # Spacer
     config_button = widgets.PushButton(text="\u2699")
@@ -531,6 +547,8 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
         dialog = create_config_dialog(refresh_callbacks=[lambda: config_refresh_callback() if config_refresh_callback else None])
         dialog.show()
     config_button.clicked.connect(open_config)
+    # Add nav_row inline with config button
+    config_row.append(nav_row)
     config_row.append(config_button)
     container.append(config_row)
 
