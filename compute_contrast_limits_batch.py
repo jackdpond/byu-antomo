@@ -142,7 +142,7 @@ def compute_all_missing_contrast_limits(csv_path, output_path=None):
         
         # Find rows that need computation
         missing_mask = df['min'].isna() | (df['min'] == '') | df['max'].isna() | (df['max'] == '')
-        missing_indices = missing_mask.nonzero()[0]
+        missing_indices = missing_mask.to_numpy().nonzero()[0]
         
         if len(missing_indices) == 0:
             logger.info("✅ All tomograms already have contrast limits computed")
@@ -267,7 +267,7 @@ Examples:
             df = pd.read_csv(args.csv_file)  # Re-read after ensuring columns
             
             missing_mask = df['min'].isna() | (df['min'] == '') | df['max'].isna() | (df['max'] == '')
-            missing_indices = missing_mask.nonzero()[0]
+            missing_indices = missing_mask.to_numpy().nonzero()[0]
             
             logger.info(f"Would compute contrast limits for {len(missing_indices)} tomograms:")
             for idx in missing_indices:
