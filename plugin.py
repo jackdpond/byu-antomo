@@ -1,6 +1,4 @@
-from magicgui import magicgui, widgets
-from napari.types import ImageData, LabelsData, PointsData
-from napari.layers import Labels, Points
+from magicgui import widgets
 from napari.utils.notifications import show_info, show_error
 import numpy as np
 import pandas as pd
@@ -10,6 +8,9 @@ import mrcfile
 from skimage import exposure
 import json
 import time
+import csv
+import glob
+import threading
 from qtpy.QtCore import QTimer
 from qtpy.QtWidgets import QApplication, QMessageBox
 from qtpy.QtCore import Qt
@@ -37,32 +38,53 @@ def get_tomogram_source_path(viewer):
     return "unknown"
 
 def adaptive_contrast_limits(image, fraction=0.005, bins=256):
-    t0 = time.time()
-    print("[adaptive_contrast_limits] Starting histogram computation...")
     hist, bin_edges = np.histogram(image, bins=bins)
-    t1 = time.time()
-    print(f"[adaptive_contrast_limits] Histogram computed in {t1-t0:.4f} seconds.")
     hist_smooth = gaussian_filter1d(hist, sigma=2)
-    print("[adaptive_contrast_limits] Smoothing histogram...")
-    t2 = time.time()
-    print(f"[adaptive_contrast_limits] Histogram smoothed in {t2-t1:.4f} seconds.")
     threshold = hist_smooth.max() * fraction
-    print(f"[adaptive_contrast_limits] Threshold for min/max: {threshold}")
     nonzero = np.where(hist_smooth > threshold)[0]
-    t3 = time.time()
-    print(f"[adaptive_contrast_limits] Nonzero bins found in {t3-t2:.4f} seconds.")
     if len(nonzero) == 0:
-        print("[adaptive_contrast_limits] No bins above threshold, using min/max.")
         return np.min(image), np.max(image)
     low = bin_edges[nonzero[0]]
     high = bin_edges[nonzero[-1]+1]  # +1 because bin_edges is len(hist)+1
-    t4 = time.time()
-    print(f"[adaptive_contrast_limits] Min/max found in {t4-t3:.4f} seconds. Total: {t4-t0:.4f} seconds.")
     return low, high
 
-def load_and_stretch(filepath):
+def compute_tomogram_contrast_limits(filepath, fraction=0.005, bins=256):
     """
-    Load tomogram as a Dask array and apply per-slice adaptive histogram-based contrast stretching for fast, clear display.
+    Compute global contrast limits for an entire tomogram.
+    This is computationally expensive but only needs to be done once per tomogram.
+    """
+    print(f"[compute_tomogram_contrast_limits] Computing global contrast limits for {filepath}")
+    start_time = time.time()
+    
+    with mrcfile.mmap(filepath, permissive=True) as mrc:
+        data = mrc.data  # This is a numpy memmap array
+    
+    print(f"[compute_tomogram_contrast_limits] Tomogram shape: {data.shape}")
+    
+    # Compute histogram for the entire tomogram
+    hist, bin_edges = np.histogram(data, bins=bins)
+    hist_smooth = gaussian_filter1d(hist, sigma=2)
+    threshold = hist_smooth.max() * fraction
+    nonzero = np.where(hist_smooth > threshold)[0]
+    
+    if len(nonzero) == 0:
+        print("[compute_tomogram_contrast_limits] No bins above threshold, using min/max.")
+        min_val, max_val = np.min(data), np.max(data)
+    else:
+        min_val = bin_edges[nonzero[0]]
+        max_val = bin_edges[nonzero[-1]+1]  # +1 because bin_edges is len(hist)+1
+    
+    end_time = time.time()
+    print(f"[compute_tomogram_contrast_limits] Global contrast limits computed in {end_time - start_time:.2f} seconds")
+    print(f"[compute_tomogram_contrast_limits] Min: {min_val}, Max: {max_val}")
+    
+    return min_val, max_val
+
+def load_and_stretch(filepath, min_val=None, max_val=None):
+    """
+    Load tomogram as a Dask array and apply contrast stretching for fast, clear display.
+    If min_val and max_val are provided, use those for global stretching.
+    Otherwise, apply per-slice adaptive histogram-based contrast stretching.
     Returns a Dask array suitable for napari.
     """
     with mrcfile.mmap(filepath, permissive=True) as mrc:
@@ -71,10 +93,17 @@ def load_and_stretch(filepath):
         dask_data = da.from_array(data, chunks=(1, data.shape[1], data.shape[2]))
 
     def stretch_slice(slice2d):
-        pmin, pmax = adaptive_contrast_limits(slice2d)
-        if pmin == pmax:
-            return np.zeros_like(slice2d, dtype=np.float32)
-        return exposure.rescale_intensity(slice2d, in_range=(pmin, pmax)).astype(np.float32)
+        if min_val is not None and max_val is not None:
+            # Use pre-computed global min/max values
+            if min_val == max_val:
+                return np.zeros_like(slice2d, dtype=np.float32)
+            return exposure.rescale_intensity(slice2d, in_range=(min_val, max_val)).astype(np.float32)
+        else:
+            # Use per-slice adaptive contrast limits (original behavior)
+            pmin, pmax = adaptive_contrast_limits(slice2d)
+            if pmin == pmax:
+                return np.zeros_like(slice2d, dtype=np.float32)
+            return exposure.rescale_intensity(slice2d, in_range=(pmin, pmax)).astype(np.float32)
 
     # Map the stretching function over each z-slice
     stretched = dask_data.map_blocks(
@@ -289,8 +318,6 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
                     "timestamp": timestamp,
                     "source_path": source_path,
                 })
-            # Debug print
-            print("[DEBUG] storage_granule/cell rows:", rows)
             df = pd.DataFrame(rows)
             if df.empty:
                 show_error(f"⚠️ No valid {label} shapes found to save.")
@@ -391,7 +418,6 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
             return
         # Use config for annotation directory
         shared_dir = plugin_config['annotation_dir']
-        import glob
         csv_files = glob.glob(os.path.join(shared_dir, "*_annotations.csv"))
         if not csv_files:
             stats_container.append(widgets.Label(value="No annotations found"))
@@ -451,7 +477,6 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
                     elif label == "chemosensory_array" and pd.notna(row['mask_path']):
                         z_step, y_step, x_step = get_reduction_factors()
                         mask_2d = np.load(row['mask_path'])
-                        from skimage.transform import downscale_local_mean
                         reduced_mask = mask_2d
                         if y_step > 1 or x_step > 1:
                             reduced_mask = downscale_local_mean(mask_2d, (y_step, x_step))
@@ -663,6 +688,24 @@ def create_config_dialog(refresh_callbacks=None):
     dialog.append(tomo_ids_edit)
     dialog.append(steps_row)
     
+    # Add separator
+    dialog.append(widgets.Label(value=""))
+    dialog.append(widgets.Label(value="Batch Operations"))
+    
+    # Add batch compute button
+    batch_button = widgets.PushButton(text="Compute All Contrast Limits")
+    batch_button.max_width = 400
+    def batch_compute():
+        # Run in a separate thread to avoid blocking the UI
+        thread = threading.Thread(target=compute_all_missing_contrast_limits)
+        thread.daemon = True
+        thread.start()
+    batch_button.clicked.connect(batch_compute)
+    dialog.append(batch_button)
+    
+    # Add separator before save button
+    dialog.append(widgets.Label(value=""))
+    
     # Save button
     save_button = widgets.PushButton(text="Save")
     
@@ -685,8 +728,92 @@ def create_config_dialog(refresh_callbacks=None):
     
     return dialog
 
+def ensure_csv_columns(csv_path):
+    """
+    Ensure the tomo_ids.csv has the required min and max columns.
+    If they don't exist, add them with empty values.
+    """
+    if not os.path.exists(csv_path):
+        return False
+    
+    try:
+        df = pd.read_csv(csv_path)
+        needs_update = False
+        
+        # Check if min column exists
+        if 'min' not in df.columns:
+            df['min'] = ''
+            needs_update = True
+            print(f"[ensure_csv_columns] Added 'min' column to {csv_path}")
+        
+        # Check if max column exists
+        if 'max' not in df.columns:
+            df['max'] = ''
+            needs_update = True
+            print(f"[ensure_csv_columns] Added 'max' column to {csv_path}")
+        
+        # Save if we made changes
+        if needs_update:
+            df.to_csv(csv_path, index=False)
+            print(f"[ensure_csv_columns] Updated {csv_path} with new columns")
+        
+        return True
+    except Exception as e:
+        print(f"[ensure_csv_columns] Error ensuring CSV columns: {e}")
+        return False
+
+def compute_all_missing_contrast_limits():
+    """
+    Compute contrast limits for all tomograms in the CSV that don't have them yet.
+    This is useful for batch processing.
+    """
+    tomo_csv = plugin_config['tomo_ids_csv']
+    if not os.path.exists(tomo_csv):
+        show_error("No tomo_ids.csv found")
+        return
+    
+    try:
+        # Ensure the CSV has the required columns
+        ensure_csv_columns(tomo_csv)
+        
+        # Read the CSV
+        df = pd.read_csv(tomo_csv)
+        
+        # Find rows that need computation
+        missing_mask = df['min'].isna() | (df['min'] == '') | df['max'].isna() | (df['max'] == '')
+        missing_indices = missing_mask.nonzero()[0]
+        
+        if len(missing_indices) == 0:
+            show_info("✅ All tomograms already have contrast limits computed")
+            return
+        
+        show_info(f"🔄 Computing contrast limits for {len(missing_indices)} tomograms...")
+        
+        for i, idx in enumerate(missing_indices):
+            file_path = df.loc[idx, 'file_path']
+            tomo_id = df.loc[idx, 'tomo_id']
+            
+            print(f"[compute_all_missing_contrast_limits] Processing {i+1}/{len(missing_indices)}: {tomo_id}")
+            
+            try:
+                min_val, max_val = compute_tomogram_contrast_limits(file_path)
+                df.loc[idx, 'min'] = min_val
+                df.loc[idx, 'max'] = max_val
+                
+                # Save after each computation in case of interruption
+                df.to_csv(tomo_csv, index=False)
+                print(f"[compute_all_missing_contrast_limits] Saved contrast limits for {tomo_id}")
+                
+            except Exception as e:
+                print(f"[compute_all_missing_contrast_limits] Error processing {tomo_id}: {e}")
+                show_error(f"Failed to compute contrast limits for {tomo_id}: {e}")
+        
+        show_info(f"✅ Completed contrast limit computation for {len(missing_indices)} tomograms")
+        
+    except Exception as e:
+        show_error(f"Failed to compute contrast limits: {e}")
+
 def create_tomogram_navigator_widget(viewer, saved_annotations_widget=None, config_refresh_callback=None):
-    import csv
     # Main container
     container = widgets.Container(layout='vertical')
     container.max_width = 300
@@ -698,12 +825,20 @@ def create_tomogram_navigator_widget(viewer, saved_annotations_widget=None, conf
     tomo_csv = plugin_config['tomo_ids_csv']
     tomo_ids = []
     file_paths = []
+    min_vals = []
+    max_vals = []
     if os.path.exists(tomo_csv):
+        # Ensure the CSV has the required columns
+        ensure_csv_columns(tomo_csv)
+        
         with open(tomo_csv, newline='') as csvfile:
             reader = csv.DictReader(csvfile)
             for row in reader:
                 tomo_ids.append(row['tomo_id'])
                 file_paths.append(row['file_path'])
+                # Read min/max values if they exist, otherwise set to None
+                min_vals.append(float(row['min']) if 'min' in row and row['min'].strip() else None)
+                max_vals.append(float(row['max']) if 'max' in row and row['max'].strip() else None)
     else:
         container.append(widgets.Label(value="No tomo_ids.csv found"))
         return container
@@ -758,7 +893,6 @@ def create_tomogram_navigator_widget(viewer, saved_annotations_widget=None, conf
     load_button = widgets.PushButton(text="Load Tomogram")
     load_button.max_width = 200
     def load_tomogram():
-        print("Load Tomogram button pressed")  # Debug print
         start_time = time.time()
         selected_id = tomo_dropdown.value
         if selected_id not in tomo_ids:
@@ -766,16 +900,38 @@ def create_tomogram_navigator_widget(viewer, saved_annotations_widget=None, conf
             return
         idx = tomo_ids.index(selected_id)
         file_path = file_paths[idx]
+        min_val = min_vals[idx]
+        max_val = max_vals[idx]
+        
         # Remove all layers before loading the new tomogram
         while len(viewer.layers) > 0:
             viewer.layers.pop()
         try:
             # Set cursor to spinning icon
-            print(f"[DEBUG] Starting tomogram load in {time.time() - start_time:.2f} seconds")
             QApplication.setOverrideCursor(Qt.WaitCursor)
             start_time = time.time()
-            data = load_and_stretch(file_path)
-            print(f"[DEBUG] Processed tomogram in {time.time() - start_time:.2f} seconds")
+            
+            # Check if we have pre-computed min/max values
+            if min_val is None or max_val is None:
+                min_val, max_val = compute_tomogram_contrast_limits(file_path)
+                
+                # Save the computed values back to the CSV
+                try:
+                    # Read the current CSV
+                    df = pd.read_csv(tomo_csv)
+                    # Update the min/max values for this row
+                    df.loc[idx, 'min'] = min_val
+                    df.loc[idx, 'max'] = max_val
+                    # Save back to CSV
+                    df.to_csv(tomo_csv, index=False)
+                    # Update our local lists
+                    min_vals[idx] = min_val
+                    max_vals[idx] = max_val
+                except Exception as e:
+                    print(f"[WARNING] Failed to save contrast limits to CSV: {e}")
+            
+            # Load the tomogram with the contrast limits
+            data = load_and_stretch(file_path, min_val=min_val, max_val=max_val)
             viewer.add_image(data, name="Tomogram", metadata={'source': file_path})
             show_info(f"Loaded tomogram: {file_path}")
             if saved_annotations_widget is not None:
