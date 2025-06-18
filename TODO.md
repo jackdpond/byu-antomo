@@ -1,0 +1,4 @@
+- Add next and previous button to the navigator
+- Why are the images loading so dark?
+- had a random crash on tomo_064
+- add 'user' to config file
