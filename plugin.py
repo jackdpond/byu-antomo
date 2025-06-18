@@ -326,7 +326,6 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
         dialog = create_config_dialog(refresh_callbacks=[lambda: config_refresh_callback() if config_refresh_callback else None])
         dialog.show()
     config_button.clicked.connect(open_config)
-    config_row.append(config_button)
     container.append(config_row)
 
     return container
@@ -347,11 +346,34 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
     stats_container = widgets.Container(layout='vertical')
     container.append(stats_container)
     
+    # Pagination state
+    annotations_per_page = 4
+    current_page = {'value': 0}  # Use dict for mutability in closure
+
+    # Create pagination controls outside update_stats
+    nav_row = widgets.Container(layout='horizontal')
+    prev_btn = widgets.PushButton(text="Previous")
+    next_btn = widgets.PushButton(text="Next")
+    page_label = widgets.Label(value="Page 1 of 1")
+    nav_row.append(prev_btn)
+    nav_row.append(page_label)
+    nav_row.append(next_btn)
+
+    def prev_page():
+        if current_page['value'] > 0:
+            current_page['value'] -= 1
+            update_stats()
+    def next_page():
+        # total is set in update_stats, so we check after update
+        current_page['value'] += 1
+        update_stats()
+    prev_btn.clicked.connect(prev_page)
+    next_btn.clicked.connect(next_page)
+
     def update_stats():
         # Clear only the stats container
         while len(stats_container) > 0:
             stats_container.pop()
-        
         # Get current tomogram source
         source_path = None
         for layer in viewer.layers:
@@ -361,19 +383,22 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
                     if source_path and not os.path.isabs(source_path):
                         source_path = os.path.abspath(source_path)
                 break
-        
         if not source_path or source_path == "unknown":
             stats_container.append(widgets.Label(value="No tomogram source found"))
+            page_label.value = "Page 1 of 1"
+            prev_btn.enabled = False
+            next_btn.enabled = False
             return
-        
         # Use config for annotation directory
         shared_dir = plugin_config['annotation_dir']
         import glob
         csv_files = glob.glob(os.path.join(shared_dir, "*_annotations.csv"))
         if not csv_files:
             stats_container.append(widgets.Label(value="No annotations found"))
+            page_label.value = "Page 1 of 1"
+            prev_btn.enabled = False
+            next_btn.enabled = False
             return
-        
         # Aggregate all annotations for this tomogram
         all_rows = []
         for csv_path in csv_files:
@@ -387,17 +412,26 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
                 stats_container.append(widgets.Label(value=f"Error reading {os.path.basename(csv_path)}: {str(e)}"))
         if not all_rows:
             stats_container.append(widgets.Label(value="No annotations for this tomogram"))
+            page_label.value = "Page 1 of 1"
+            prev_btn.enabled = False
+            next_btn.enabled = False
             return
         df_source = pd.concat(all_rows, ignore_index=True)
-        # Show all annotations as clickable buttons
-        for idx, row in df_source.iterrows():
+        total = len(df_source)
+        # Pagination logic
+        max_page = max(1, (total-1)//annotations_per_page+1)
+        if current_page['value'] >= max_page:
+            current_page['value'] = max_page-1
+        start = current_page['value'] * annotations_per_page
+        end = start + annotations_per_page
+        page_rows = df_source.iloc[start:end]
+        for idx, row in page_rows.iterrows():
             label = row['label']
             label_container = widgets.Container(layout='horizontal')
             label_container.style = {'margin': '2px 0'}  # Reduce vertical spacing
             label_name = widgets.Label(value=f"{label}:")
             label_name.min_width = 100
             label_container.append(label_name)
-            
             # Create a button for this annotation
             btn = widgets.PushButton(text="Show", name=f"show_{idx}")
             def make_on_click(row=row, label=label, idx=idx):
@@ -456,7 +490,6 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
                 return on_click
             btn.clicked.connect(make_on_click())
             label_container.append(btn)
-            
             # Add delete button with trashcan icon
             delete_btn = widgets.PushButton(text="🗑️", name=f"delete_{idx}")
             def make_delete_click(row=row, label=label, idx=idx):
@@ -478,9 +511,9 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
                         # Read the CSV file
                         df = pd.read_csv(csv_path)
                         # Remove the row matching this annotation
-                        df = df[~((df['source_path'] == row['source_path']) & 
-                                (df['z'] == row['z']) & 
-                                (df['y'] == row['y']) & 
+                        df = df[~((df['source_path'] == row['source_path']) & \
+                                (df['z'] == row['z']) & \
+                                (df['y'] == row['y']) & \
                                 (df['x'] == row['x']))]
                         # Save the updated dataframe
                         df.to_csv(csv_path, index=False)
@@ -490,21 +523,30 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
                             viewer.layers.remove(display_layer_name)
                         show_info(f"✅ Removed {label} annotation")
                         update_stats()
-                
                 return on_delete
             delete_btn.clicked.connect(make_delete_click())
             delete_btn.min_width = 32
             delete_btn.max_width = 32
             label_container.append(delete_btn)
-            
             stats_container.append(label_container)
-    
+        # Update pagination controls
+        page_label.value = f"Page {current_page['value']+1} of {max_page}"
+        prev_btn.enabled = current_page['value'] > 0
+        next_btn.enabled = (current_page['value']+1) < max_page
+
     refresh_button.clicked.connect(update_stats)
     update_stats()
-    
-    # Add config button at the bottom right
+
+    # At the end, in the config_row section:
     config_row = widgets.Container(layout='horizontal')
-    config_row.append(widgets.Label(value=""))  # Spacer
+    # Add a flexible spacer to push controls to the right
+    spacer = widgets.Label(value="")
+    spacer.min_width = 0
+    spacer.max_width = 16777215  # Large value to act as a flexible spacer
+    config_row.append(spacer)
+    config_row.append(prev_btn)
+    config_row.append(page_label)
+    config_row.append(next_btn)
     config_button = widgets.PushButton(text="\u2699")
     config_button.min_width = 32
     config_button.max_width = 32
@@ -512,7 +554,6 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
         dialog = create_config_dialog(refresh_callbacks=[lambda: config_refresh_callback() if config_refresh_callback else None])
         dialog.show()
     config_button.clicked.connect(open_config)
-    config_row.append(config_button)
     container.append(config_row)
 
     return container
