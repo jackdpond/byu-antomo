@@ -241,35 +241,42 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
             show_info(f"✅ Saved {label} mask for slice {current_z_original}")
             
         elif label in ["cell", "storage_granule"]:
-            current_z_reduced = viewer.dims.current_step[0]
-            current_z_original = current_z_reduced * z_step
             shapes_layer = layer
             rows = []
-            
             for poly in shapes_layer.data:
-                if np.allclose(poly[:, 0], current_z_reduced):
-                    poly_yx = poly[:, 1:3]
-                    min_y, max_y = np.min(poly_yx[:, 0]), np.max(poly_yx[:, 0])
-                    min_x, max_x = np.min(poly_yx[:, 1]), np.max(poly_yx[:, 1])
-                    
-                    center_y = ((min_y + max_y) / 2) * y_step
-                    center_x = ((min_x + max_x) / 2) * x_step
-                    width = (max_x - min_x) * x_step
-                    height = (max_y - min_y) * y_step
-                    
-                    rows.append({
-                        "z": current_z_original,
-                        "y": center_y,
-                        "x": center_x,
-                        "width": width,
-                        "height": height,
-                        "label": label,
-                        "user": user,
-                        "timestamp": timestamp,
-                        "source_path": source_path,
-                    })
-            
+                # Use the Z coordinate of this shape (assume all points in poly have the same Z)
+                z_reduced = poly[0, 0]
+                z_original = z_reduced * z_step
+                poly_yx = poly[:, 1:3]
+                min_y, max_y = np.min(poly_yx[:, 0]), np.max(poly_yx[:, 0])
+                min_x, max_x = np.min(poly_yx[:, 1]), np.max(poly_yx[:, 1])
+
+                center_y = ((min_y + max_y) / 2) * y_step
+                center_x = ((min_x + max_x) / 2) * x_step
+                width = (max_x - min_x) * x_step
+                height = (max_y - min_y) * y_step
+
+                rows.append({
+                    "z": z_original,
+                    "y": center_y,
+                    "x": center_x,
+                    "width": width,
+                    "height": height,
+                    "label": label,
+                    "user": user,
+                    "timestamp": timestamp,
+                    "source_path": source_path,
+                })
+            # Debug print
+            print("[DEBUG] storage_granule/cell rows:", rows)
             df = pd.DataFrame(rows)
+            if df.empty:
+                show_error(f"⚠️ No valid {label} shapes found to save.")
+                return
+            missing_cols = [col for col in columns_dict[label] if col not in df.columns]
+            if missing_cols:
+                show_error(f"⚠️ Missing columns in DataFrame: {missing_cols}")
+                return
             df = df[columns_dict[label]]
             show_info(f"✅ Saved {len(df)} {label} shapes")
         
