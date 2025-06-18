@@ -343,13 +343,9 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
     refresh_button = widgets.PushButton(text="Refresh Stats")
     container.append(refresh_button)
     
-    # Create a scrollable sub-container for stats
-    stats_scroll = widgets.Container(layout='vertical')
-    stats_scroll.max_height = 300  # Set max height for scroll area
-    stats_scroll.scrollable = True  # Enable scrolling if supported
+    # Remove scrollable container for stats
     stats_container = widgets.Container(layout='vertical')
-    stats_scroll.append(stats_container)
-    container.append(stats_scroll)
+    container.append(stats_container)
     
     def update_stats():
         # Clear only the stats container
