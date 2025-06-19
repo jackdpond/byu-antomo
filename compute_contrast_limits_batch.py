@@ -267,6 +267,12 @@ Examples:
         help='Show what would be computed without actually doing it'
     )
     
+    parser.add_argument(
+        '--validate-only',
+        action='store_true',
+        help='Only validate MRC files without computing contrast limits'
+    )
+    
     args = parser.parse_args()
     
     # Validate input file
@@ -284,9 +290,54 @@ Examples:
         logger.info(f"Output file: {args.output_file}")
     if args.dry_run:
         logger.info("DRY RUN MODE - No actual computation will be performed")
+    if args.validate_only:
+        logger.info("VALIDATE ONLY MODE - Only checking file validity")
     logger.info("=" * 60)
     
-    if args.dry_run:
+    if args.validate_only:
+        # Only validate files
+        try:
+            df = pd.read_csv(args.csv_file)
+            logger.info(f"Validating {len(df)} tomogram files...")
+            
+            valid_count = 0
+            invalid_count = 0
+            invalid_files = []
+            
+            for idx, row in df.iterrows():
+                file_path = row['file_path']
+                tomo_id = row['tomo_id']
+                
+                logger.info(f"Validating {idx+1}/{len(df)}: {tomo_id}")
+                is_valid, error_message = validate_mrc_file(file_path)
+                
+                if is_valid:
+                    logger.info(f"✅ {tomo_id}: Valid")
+                    valid_count += 1
+                else:
+                    logger.error(f"❌ {tomo_id}: {error_message}")
+                    invalid_count += 1
+                    invalid_files.append((tomo_id, file_path, error_message))
+            
+            logger.info("=" * 60)
+            logger.info("VALIDATION SUMMARY")
+            logger.info("=" * 60)
+            logger.info(f"✅ Valid files: {valid_count}")
+            logger.info(f"❌ Invalid files: {invalid_count}")
+            
+            if invalid_files:
+                logger.info("Invalid files:")
+                for tomo_id, file_path, error in invalid_files:
+                    logger.info(f"  - {tomo_id}: {error}")
+                    logger.info(f"    Path: {file_path}")
+            
+            sys.exit(0 if invalid_count == 0 else 1)
+            
+        except Exception as e:
+            logger.error(f"Error during validation: {e}")
+            sys.exit(1)
+    
+    elif args.dry_run:
         # Just show what would be computed
         try:
             df = pd.read_csv(args.csv_file)
