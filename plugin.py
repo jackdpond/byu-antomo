@@ -171,8 +171,17 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
     )
     user_widget = widgets.LineEdit(
         name='user',
-        label='User'
+        label='User',
+        value=plugin_config.get('user', '')  # Load user from config
     )
+    
+    # Save user name when it changes
+    def on_user_changed(event=None):
+        if user_widget.value:  # Only save if not empty
+            plugin_config['user'] = user_widget.value
+            save_plugin_config(plugin_config)
+    
+    user_widget.changed.connect(on_user_changed)
     
     container.extend([label_widget, user_widget])
     
@@ -433,6 +442,13 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
                 if 'source_path' in df.columns:
                     df_source = df[df['source_path'] == source_path]
                     if not df_source.empty:
+                        # Remove duplicates based on label type
+                        if any(label in csv_path for label in ["pilus", "flagellar_motor", "ribosome"]):
+                            df_source = df_source.drop_duplicates(subset=['z', 'y', 'x', 'source_path'], keep='first')
+                        elif "chemosensory_array" in csv_path:
+                            df_source = df_source.drop_duplicates(subset=['z', 'source_path', 'mask_path'], keep='first')
+                        elif any(label in csv_path for label in ["cell", "storage_granule"]):
+                            df_source = df_source.drop_duplicates(subset=['z', 'y', 'x', 'width', 'height', 'source_path'], keep='first')
                         all_rows.append(df_source)
             except Exception as e:
                 stats_container.append(widgets.Label(value=f"Error reading {os.path.basename(csv_path)}: {str(e)}"))
@@ -443,7 +459,24 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
             next_btn.enabled = False
             return
         df_source = pd.concat(all_rows, ignore_index=True)
+        
+        # Additional deduplication after concatenation to catch any cross-file duplicates
+        if len(df_source) > 0:
+            label = df_source.iloc[0]['label']  # Get the label from the first row
+            if label in ["pilus", "flagellar_motor", "ribosome"]:
+                df_source = df_source.drop_duplicates(subset=['z', 'y', 'x', 'source_path'], keep='first')
+            elif label == "chemosensory_array":
+                df_source = df_source.drop_duplicates(subset=['z', 'source_path', 'mask_path'], keep='first')
+            elif label in ["cell", "storage_granule"]:
+                df_source = df_source.drop_duplicates(subset=['z', 'y', 'x', 'width', 'height', 'source_path'], keep='first')
+        
         total = len(df_source)
+        
+        # Debug: print the DataFrame to see what we're working with
+        print(f"Total annotations found: {total}")
+        print("DataFrame contents:")
+        print(df_source.to_string())
+        
         # Pagination logic
         max_page = max(1, (total-1)//annotations_per_page+1)
         if current_page['value'] >= max_page:
@@ -451,19 +484,36 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
         start = current_page['value'] * annotations_per_page
         end = start + annotations_per_page
         page_rows = df_source.iloc[start:end]
-        for idx, row in page_rows.iterrows():
+        
+        print(f"Page {current_page['value']+1}: showing rows {start} to {end}")
+        print(f"Page rows: {len(page_rows)}")
+        
+        # Create unique identifiers for each annotation
+        for i, (_, row) in enumerate(page_rows.iterrows()):
             label = row['label']
+            # Create a unique identifier using the row data and position in the list
+            if label in ["pilus", "flagellar_motor", "ribosome"]:
+                unique_id = f"{label}_{row['z']}_{row['y']}_{row['x']}_{row['source_path']}_{i}"
+            elif label == "chemosensory_array":
+                unique_id = f"{label}_{row['z']}_{row['source_path']}_{i}"
+            else:
+                unique_id = f"{label}_{row['z']}_{row['y']}_{row['x']}_{row['source_path']}_{i}"
+            
+            # Debug: print the unique ID to see if they're different
+            print(f"Annotation {i}: {unique_id}")
+            print(f"  Row data: z={row['z']}, y={row['y']}, x={row['x']}, source={row['source_path']}")
+            
             label_container = widgets.Container(layout='horizontal')
             label_container.style = {'margin': '2px 0'}  # Reduce vertical spacing
             label_name = widgets.Label(value=f"{label}:")
             label_name.min_width = 100
             label_container.append(label_name)
             # Create a button for this annotation
-            btn = widgets.PushButton(text="Show", name=f"show_{idx}")
-            def make_on_click(row=row, label=label, idx=idx):
+            btn = widgets.PushButton(text="Show", name=f"show_{unique_id}")
+            def make_on_click(row=row, label=label, unique_id=unique_id):
                 def on_click():
                     # Remove any previous display layer for this annotation
-                    display_layer_name = f"[DISPLAY] {label} {idx}"
+                    display_layer_name = f"[DISPLAY] {unique_id}"
                     if display_layer_name in viewer.layers:
                         viewer.layers.remove(display_layer_name)
                     if label in ["pilus", "flagellar_motor", "ribosome"]:
@@ -516,8 +566,8 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
             btn.clicked.connect(make_on_click())
             label_container.append(btn)
             # Add delete button with trashcan icon
-            delete_btn = widgets.PushButton(text="🗑️", name=f"delete_{idx}")
-            def make_delete_click(row=row, label=label, idx=idx):
+            delete_btn = widgets.PushButton(text="🗑️", name=f"delete_{unique_id}")
+            def make_delete_click(row=row, label=label, unique_id=unique_id):
                 def on_delete():
                     msg = QMessageBox()
                     msg.setIcon(QMessageBox.Warning)
@@ -543,7 +593,7 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
                         # Save the updated dataframe
                         df.to_csv(csv_path, index=False)
                         # Remove the display layer if it exists
-                        display_layer_name = f"[DISPLAY] {label} {idx}"
+                        display_layer_name = f"[DISPLAY] {unique_id}"
                         if display_layer_name in viewer.layers:
                             viewer.layers.remove(display_layer_name)
                         show_info(f"✅ Removed {label} annotation")
@@ -590,7 +640,8 @@ def load_plugin_config():
         'tomo_ids_csv': os.path.expanduser('~/groups/fslg_imagseg/jackson/Napari/tomo_ids.csv'),
         'tomogram_z_step': 2,  # Default to taking every second slice in Z
         'tomogram_y_step': 1,  # Default to no skipping in Y
-        'tomogram_x_step': 1   # Default to no skipping in X
+        'tomogram_x_step': 1,  # Default to no skipping in X
+        'user': ''  # Store the user name
     }
     if os.path.exists(CONFIG_PATH):
         try:
