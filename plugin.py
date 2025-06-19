@@ -941,7 +941,21 @@ def create_tomogram_navigator_widget(viewer, saved_annotations_widget=None, conf
 
     # Load and config buttons in a row, right-aligned
     button_row = widgets.Container(layout='horizontal')
-    load_button = widgets.PushButton(text="Load Tomogram")
+    
+    # Previous button (left arrow)
+    prev_button = widgets.PushButton(text="←")
+    prev_button.max_width = 32
+    prev_button.min_width = 32
+    def prev_tomo():
+        current_idx = tomo_ids.index(tomo_dropdown.value)
+        if current_idx > 0:
+            tomo_dropdown.value = tomo_ids[current_idx - 1]
+            load_tomogram()  # Automatically load the previous tomogram
+    prev_button.clicked.connect(prev_tomo)
+    button_row.append(prev_button)
+    
+    # Load button in the middle
+    load_button = widgets.PushButton(text="Load")  # Changed from "Load Tomogram" to "Load"
     load_button.max_width = 200
     def load_tomogram():
         start_time = time.time()
@@ -997,6 +1011,20 @@ def create_tomogram_navigator_widget(viewer, saved_annotations_widget=None, conf
             QApplication.restoreOverrideCursor()
     load_button.clicked.connect(load_tomogram)
     button_row.append(load_button)
+    
+    # Next button (right arrow)
+    next_button = widgets.PushButton(text="→")
+    next_button.max_width = 32
+    next_button.min_width = 32
+    def next_tomo():
+        current_idx = tomo_ids.index(tomo_dropdown.value)
+        if current_idx < len(tomo_ids) - 1:
+            tomo_dropdown.value = tomo_ids[current_idx + 1]
+            load_tomogram()  # Automatically load the next tomogram
+    next_button.clicked.connect(next_tomo)
+    button_row.append(next_button)
+    
+    # Config button
     config_button = widgets.PushButton(text="\u2699")
     config_button.min_width = 32
     config_button.max_width = 32
@@ -1005,6 +1033,7 @@ def create_tomogram_navigator_widget(viewer, saved_annotations_widget=None, conf
         dialog.show()
     config_button.clicked.connect(open_config)
     button_row.append(config_button)
+    
     container.append(button_row)
 
     return container
