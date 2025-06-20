@@ -598,6 +598,29 @@ def create_annotation_viewer_widget(viewer, config_refresh_callback=None):
                             viewer.layers.remove(display_layer_name)
                         show_info(f"✅ Removed {label} annotation")
                         update_stats()
+                        # --- TRASHBIN LOGIC START ---
+                        # Define superset of all columns
+                        trash_columns = [
+                            'z', 'y', 'x', 'width', 'height', 'label', 'user', 'timestamp', 'source_path', 'mask_path',
+                            'deleted_label', 'deleted_timestamp', 'deleted_user'
+                        ]
+                        # Build the row dict with all columns
+                        trash_row = {col: row[col] if col in row else '' for col in trash_columns}
+                        # Add trashbin metadata
+                        trash_row['deleted_label'] = label
+                        trash_row['deleted_timestamp'] = datetime.datetime.now().isoformat()
+                        trash_row['deleted_user'] = row['user'] if 'user' in row and pd.notna(row['user']) else plugin_config.get('user', '')
+                        # Path to trash.csv
+                        trash_path = os.path.join(shared_dir, 'trash.csv')
+                        # If trash.csv exists, append; else, create with header
+                        import csv
+                        file_exists = os.path.exists(trash_path)
+                        with open(trash_path, 'a', newline='') as f:
+                            writer = csv.DictWriter(f, fieldnames=trash_columns)
+                            if not file_exists:
+                                writer.writeheader()
+                            writer.writerow(trash_row)
+                        # --- TRASHBIN LOGIC END ---
                 return on_delete
             delete_btn.clicked.connect(make_delete_click())
             delete_btn.min_width = 32
