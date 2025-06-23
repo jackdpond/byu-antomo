@@ -255,6 +255,7 @@ dependencies:
   - shellingham=1.5.4=pyhd8ed1ab_1
   - sip=6.10.0=py310hf71b8c6_0
   - six=1.17.0=pyhd8ed1ab_0
+  - SimpleITK=2.5.0=py310h5eaa309_0
   - snappy=1.2.1=h8bd8927_1
   - snowballstemmer=3.0.1=pyhd8ed1ab_0
   - sphinx=8.1.3=pyhd8ed1ab_1
