@@ -1,1 +1,0 @@
-- look at clustering with min and max as coordinates. Tell species type apart.
