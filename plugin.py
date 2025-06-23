@@ -17,6 +17,12 @@ from qtpy.QtCore import Qt
 from skimage.transform import downscale_local_mean
 import dask.array as da
 from scipy.ndimage import gaussian_filter1d
+try:
+    import SimpleITK as sitk
+    SITK_AVAILABLE = True
+except ImportError:
+    SITK_AVAILABLE = False
+    print("Warning: SimpleITK not available. 3D CLAHE option will not work.")
 
 CONFIG_PATH = os.path.expanduser('~/.napari_plugin_config.json')
 
@@ -112,6 +118,82 @@ def load_and_stretch(filepath, min_val=None, max_val=None):
         chunks=dask_data.chunks
     )
     return stretched
+
+def load_and_equalize(filepath):
+    """
+    Load tomogram as a Dask array and apply adaptive histogram equalization for enhanced contrast.
+    This method does not use pre-computed min/max values and applies equalization per slice.
+    Returns a Dask array suitable for napari.
+    """
+    with mrcfile.mmap(filepath, permissive=True) as mrc:
+        data = mrc.data  # This is a numpy memmap array
+        # Wrap as Dask array, chunked by z-slice
+        dask_data = da.from_array(data, chunks=(1, data.shape[1], data.shape[2]))
+
+    def equalize_slice(slice2d):
+        # Apply adaptive histogram equalization to each slice
+        return exposure.equalize_adapthist(slice2d).astype(np.float32)
+
+    # Map the equalization function over each z-slice
+    equalized = dask_data.map_blocks(
+        lambda block: np.stack([equalize_slice(s) for s in block]),
+        dtype=np.float32,
+        chunks=dask_data.chunks
+    )
+    return equalized
+
+def load_and_clahe(filepath, tile_radius=(4,4,4), clip_limit=2.0):
+    """
+    Load tomogram and apply 3D CLAHE (Contrast Limited Adaptive Histogram Equalization) using SimpleITK.
+    This method applies true 3D adaptive histogram equalization across the entire volume.
+    Returns a Dask array suitable for napari.
+    """
+    if not SITK_AVAILABLE:
+        raise ImportError("SimpleITK is not available. Please install SimpleITK to use 3D CLAHE.")
+    
+    print(f"[load_and_clahe] Starting 3D CLAHE processing for {filepath}")
+    start_time = time.time()
+    
+    # Load data
+    load_start = time.time()
+    with mrcfile.mmap(filepath, permissive=True) as mrc:
+        data = mrc.data  # This is a numpy memmap array
+    load_time = time.time() - load_start
+    print(f"[load_and_clahe] Data loaded in {load_time:.2f} seconds, shape: {data.shape}")
+    
+    # Convert to SimpleITK image
+    convert_start = time.time()
+    image = sitk.GetImageFromArray(data.astype(np.float32))
+    convert_time = time.time() - convert_start
+    print(f"[load_and_clahe] Converted to SimpleITK image in {convert_time:.2f} seconds")
+    
+    # Apply 3D CLAHE
+    clahe_start = time.time()
+    eq_image = sitk.AdaptiveHistogramEqualization(
+        image,
+        radius=tile_radius,
+        alpha=0.3,
+        beta=0.3
+    )
+    clahe_time = time.time() - clahe_start
+    print(f"[load_and_clahe] 3D CLAHE applied in {clahe_time:.2f} seconds (tile_radius={tile_radius})")
+    
+    # Convert back to numpy array
+    convert_back_start = time.time()
+    equalized_data = sitk.GetArrayFromImage(eq_image)
+    convert_back_time = time.time() - convert_back_start
+    print(f"[load_and_clahe] Converted back to numpy array in {convert_back_time:.2f} seconds")
+    
+    # Wrap as Dask array for consistency with other loading methods
+    dask_start = time.time()
+    dask_data = da.from_array(equalized_data, chunks=(1, equalized_data.shape[1], equalized_data.shape[2]))
+    dask_time = time.time() - dask_start
+    print(f"[load_and_clahe] Wrapped as Dask array in {dask_time:.2f} seconds")
+    
+    total_time = time.time() - start_time
+    print(f"[load_and_clahe] Total processing time: {total_time:.2f} seconds")
+    
+    return dask_data
 
 def get_reduction_factors():
     return (
@@ -350,7 +432,60 @@ def create_annotation_widget(viewer, config_refresh_callback=None):
     save_button = widgets.PushButton(text="Save Annotation", name='save_button')
     save_button.clicked.connect(save_annotation)
     
-    container.extend([add_button, save_button])
+    # --- Average Slices UI ---
+    avg_row = widgets.Container(layout='horizontal')
+    avg_button = widgets.PushButton(text="Average Slices", name='average_slices_button')
+    window_spin = widgets.SpinBox(value=5, min=1, max=50, label="Window")
+    window_spin.max_width = 80
+    avg_row.append(avg_button)
+    avg_row.append(window_spin)
+
+    def on_average_slices():
+        # Find the Tomogram layer
+        tomo_layer = get_tomogram_layer(viewer)
+        if tomo_layer is None:
+            show_error("No Tomogram layer loaded.")
+            return
+        data = tomo_layer.data
+        if hasattr(data, 'compute'):
+            data = data.compute()
+        if data.ndim != 3:
+            show_error("Tomogram is not 3D.")
+            return
+        window = window_spin.value
+        # Remove any previous Live Averaged layers
+        for lyr in list(viewer.layers):
+            if lyr.name.startswith("Live Averaged"):
+                viewer.layers.remove(lyr)
+        avg_layer_name = f"Live Averaged (window={window})"
+        # Create a blank image for the first slice
+        z, y, x = data.shape
+        initial_z = viewer.dims.current_step[0] if hasattr(viewer.dims, 'current_step') else 0
+        def get_avg_slice(z_idx):
+            start = max(0, z_idx - window)
+            end = min(z, z_idx + window + 1)
+            return data[start:end].mean(axis=0)
+        avg_img = get_avg_slice(initial_z)
+        # Add the image layer
+        avg_layer = viewer.add_image(
+            avg_img,
+            name=avg_layer_name,
+            blending='additive',
+            visible=True
+        )
+        # Hide the Tomogram layer
+        if 'Tomogram' in viewer.layers:
+            viewer.layers['Tomogram'].visible = False
+        # Callback to update the averaged slice as user scrolls
+        def update_avg_slice(event=None):
+            z_idx = viewer.dims.current_step[0]
+            avg_layer.data = get_avg_slice(z_idx)
+        # Connect the callback
+        viewer.dims.events.current_step.connect(update_avg_slice)
+        show_info(f"Live averaging enabled with window size {window}. Scroll Z to update.")
+
+    avg_button.clicked.connect(on_average_slices)
+    container.extend([add_button, save_button, avg_row])
 
     # Add config button at the bottom right
     config_row = widgets.Container(layout='horizontal')
@@ -664,7 +799,8 @@ def load_plugin_config():
         'tomogram_z_step': 2,  # Default to taking every second slice in Z
         'tomogram_y_step': 1,  # Default to no skipping in Y
         'tomogram_x_step': 1,  # Default to no skipping in X
-        'user': ''  # Store the user name
+        'user': '',  # Store the user name
+        'tomogram_loading_method': 'stretch'  # 'stretch' or 'equalize'
     }
     if os.path.exists(CONFIG_PATH):
         try:
@@ -762,6 +898,40 @@ def create_config_dialog(refresh_callbacks=None):
     dialog.append(tomo_ids_edit)
     dialog.append(steps_row)
     
+    # Add tomogram loading method selection
+    loading_method_label = widgets.Label(value="Tomogram Loading Method:")
+    
+    # Choose available methods based on SimpleITK availability
+    available_methods = ["stretch", "equalize"]
+    if SITK_AVAILABLE:
+        available_methods.append("clahe")
+    
+    # Get current method, defaulting to stretch if clahe is selected but not available
+    current_method = plugin_config.get('tomogram_loading_method', 'stretch')
+    if current_method == 'clahe' and not SITK_AVAILABLE:
+        current_method = 'stretch'
+    
+    loading_method_combo = widgets.ComboBox(
+        choices=available_methods,
+        value=current_method,
+        label="Method"
+    )
+    loading_method_combo.max_width = 400
+    
+    # Add description
+    method_desc_text = "stretch: Use pre-computed contrast limits\nequalize: Apply adaptive histogram equalization"
+    if SITK_AVAILABLE:
+        method_desc_text += "\nclahe: Apply 3D CLAHE using SimpleITK"
+    else:
+        method_desc_text += "\nclahe: Not available (SimpleITK not installed)"
+    
+    method_desc = widgets.Label(value=method_desc_text)
+    method_desc.style = {'font-size': '10px', 'color': 'gray'}
+    
+    dialog.append(loading_method_label)
+    dialog.append(loading_method_combo)
+    dialog.append(method_desc)
+    
     # Add separator
     dialog.append(widgets.Label(value=""))
     dialog.append(widgets.Label(value="Batch Operations"))
@@ -789,6 +959,7 @@ def create_config_dialog(refresh_callbacks=None):
         plugin_config['tomogram_z_step'] = z_step_edit.value
         plugin_config['tomogram_y_step'] = y_step_edit.value
         plugin_config['tomogram_x_step'] = x_step_edit.value
+        plugin_config['tomogram_loading_method'] = loading_method_combo.value
         save_plugin_config(plugin_config)
         # Call refresh callbacks if provided
         if refresh_callbacks:
@@ -999,29 +1170,47 @@ def create_tomogram_navigator_widget(viewer, saved_annotations_widget=None, conf
             QApplication.setOverrideCursor(Qt.WaitCursor)
             start_time = time.time()
             
-            # Check if we have pre-computed min/max values
-            if min_val is None or max_val is None:
-                min_val, max_val = compute_tomogram_contrast_limits(file_path)
-                
-                # Save the computed values back to the CSV
-                try:
-                    # Read the current CSV
-                    df = pd.read_csv(tomo_csv)
-                    # Update the min/max values for this row
-                    df.loc[idx, 'min'] = min_val
-                    df.loc[idx, 'max'] = max_val
-                    # Save back to CSV
-                    df.to_csv(tomo_csv, index=False)
-                    # Update our local lists
-                    min_vals[idx] = min_val
-                    max_vals[idx] = max_val
-                except Exception as e:
-                    print(f"[WARNING] Failed to save contrast limits to CSV: {e}")
+            # Get the loading method from config
+            loading_method = plugin_config.get('tomogram_loading_method', 'stretch')
             
-            # Load the tomogram with the contrast limits
-            data = load_and_stretch(file_path, min_val=min_val, max_val=max_val)
+            if loading_method == 'equalize':
+                # Use adaptive histogram equalization (doesn't need min/max values)
+                data = load_and_equalize(file_path)
+                show_info(f"Loaded tomogram with adaptive equalization: {file_path}")
+            elif loading_method == 'clahe':
+                # Use 3D CLAHE (doesn't need min/max values)
+                if not SITK_AVAILABLE:
+                    show_error("SimpleITK is not available. Please install SimpleITK to use 3D CLAHE.")
+                    return
+                data = load_and_clahe(file_path)
+                show_info(f"Loaded tomogram with 3D CLAHE: {file_path}")
+            else:
+                # Use contrast stretching (needs min/max values)
+                # Check if we have pre-computed min/max values
+                if min_val is None or max_val is None:
+                    min_val, max_val = compute_tomogram_contrast_limits(file_path)
+                    
+                    # Save the computed values back to the CSV
+                    try:
+                        # Read the current CSV
+                        df = pd.read_csv(tomo_csv)
+                        # Update the min/max values for this row
+                        df.loc[idx, 'min'] = min_val
+                        df.loc[idx, 'max'] = max_val
+                        # Save back to CSV
+                        df.to_csv(tomo_csv, index=False)
+                        # Update our local lists
+                        min_vals[idx] = min_val
+                        max_vals[idx] = max_val
+                    except Exception as e:
+                        print(f"[WARNING] Failed to save contrast limits to CSV: {e}")
+                
+                # Load the tomogram with the contrast limits
+                data = load_and_stretch(file_path, min_val=min_val, max_val=max_val)
+                show_info(f"Loaded tomogram with contrast stretching: {file_path}")
+            
             viewer.add_image(data, name="Tomogram", metadata={'source': file_path})
-            show_info(f"Loaded tomogram: {file_path}")
+            
             if saved_annotations_widget is not None:
                 for w in saved_annotations_widget:
                     if hasattr(w, 'text') and w.text == "Refresh Stats":
