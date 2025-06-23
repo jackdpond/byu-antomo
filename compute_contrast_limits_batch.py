@@ -48,6 +48,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def validate_mrc_file(file_path):
+    try:
+        with mrcfile.open(file_path, permissive=True) as mrc:
+            _ = mrc.data.shape  # Try to access data to ensure it's valid
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
 def adaptive_contrast_limits_gpu(image, fraction=0.005, bins=256):
     """
     Compute adaptive contrast limits using GPU-accelerated histogram analysis.
